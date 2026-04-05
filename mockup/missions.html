@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RobotOps - Missions</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>tailwind.config={theme:{extend:{fontFamily:{sans:['Inter','sans-serif']}}}}</script>
+</head>
+<body class="font-sans bg-slate-50 min-h-screen">
+
+  <div id="sidebar"></div>
+  <div class="ml-60">
+    <div id="header"></div>
+
+    <main class="p-6">
+
+      <!-- Action Bar -->
+      <div class="flex items-center justify-between mb-6">
+        <div class="flex items-center gap-3">
+          <div class="relative flex-1">
+            <svg class="w-4 h-4 text-slate-400 absolute left-3 top-2.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            <input type="text" placeholder="Search missions..." class="w-72 h-9 pl-9 pr-4 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+          </div>
+          <select class="h-9 px-3 text-sm border border-slate-200 rounded-lg bg-white text-slate-700">
+            <option>All Status</option>
+            <option>CREATED</option>
+            <option>ASSIGNED</option>
+            <option>RUNNING</option>
+            <option>PAUSED</option>
+            <option>DONE</option>
+            <option>CANCELED</option>
+            <option>FAILED</option>
+          </select>
+          <select class="h-9 px-3 text-sm border border-slate-200 rounded-lg bg-white text-slate-700">
+            <option>All Robots</option>
+            <option>Robot-01</option>
+            <option>Robot-02</option>
+            <option>Robot-04</option>
+            <option>Robot-06</option>
+          </select>
+          <select class="h-9 px-3 text-sm border border-slate-200 rounded-lg bg-white text-slate-700">
+            <option>All Floors</option>
+            <option>B1</option>
+            <option>1F</option>
+            <option>2F</option>
+          </select>
+        </div>
+        <a href="mission-create.html" class="flex items-center gap-2 h-9 px-4 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14m-7-7h14"/></svg>
+          New Mission
+        </a>
+      </div>
+
+      <!-- Mission Table -->
+      <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <table class="w-full">
+          <thead>
+            <tr class="border-b border-slate-200 bg-slate-50/50">
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3">Mission ID</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3">Robot</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3">Type</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3">Status</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3">Priority</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3">Floor</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3">Pickup → Dropoff</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3">Created</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3">Completed</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100">
+            <tr class="hover:bg-slate-50 cursor-pointer">
+              <td class="px-5 py-3 text-sm font-semibold text-blue-600">MSN-0044</td>
+              <td class="px-5 py-3 text-sm text-slate-700">Robot-06</td>
+              <td class="px-5 py-3 text-sm text-slate-500">Delivery</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">ASSIGNED</span></td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">NORMAL</span></td>
+              <td class="px-5 py-3 text-sm text-slate-500">1F</td>
+              <td class="px-5 py-3 text-sm text-slate-600">Lobby → Room-103</td>
+              <td class="px-5 py-3 text-sm text-slate-400">3 min ago</td>
+              <td class="px-5 py-3 text-sm text-slate-400">--</td>
+            </tr>
+            <tr class="hover:bg-slate-50 cursor-pointer">
+              <td class="px-5 py-3 text-sm font-semibold text-blue-600">MSN-0043</td>
+              <td class="px-5 py-3 text-sm text-slate-700">Robot-02</td>
+              <td class="px-5 py-3 text-sm text-slate-500">Delivery</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>RUNNING</span></td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">HIGH</span></td>
+              <td class="px-5 py-3 text-sm text-slate-500">1F</td>
+              <td class="px-5 py-3 text-sm text-slate-600">Reception → Room-108</td>
+              <td class="px-5 py-3 text-sm text-slate-400">28 min ago</td>
+              <td class="px-5 py-3 text-sm text-slate-400">--</td>
+            </tr>
+            <tr class="hover:bg-slate-50 cursor-pointer">
+              <td class="px-5 py-3 text-sm font-semibold text-blue-600">MSN-0042</td>
+              <td class="px-5 py-3 text-sm text-slate-700">Robot-01</td>
+              <td class="px-5 py-3 text-sm text-slate-500">Delivery</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>RUNNING</span></td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">HIGH</span></td>
+              <td class="px-5 py-3 text-sm text-slate-500">B1</td>
+              <td class="px-5 py-3 text-sm text-slate-600">Kitchen-B1 → Room-B102</td>
+              <td class="px-5 py-3 text-sm text-slate-400">45 min ago</td>
+              <td class="px-5 py-3 text-sm text-slate-400">--</td>
+            </tr>
+            <tr class="hover:bg-slate-50 cursor-pointer">
+              <td class="px-5 py-3 text-sm text-slate-600">MSN-0041</td>
+              <td class="px-5 py-3 text-sm text-slate-700">Robot-01</td>
+              <td class="px-5 py-3 text-sm text-slate-500">Delivery</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-600 text-white">DONE</span></td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">NORMAL</span></td>
+              <td class="px-5 py-3 text-sm text-slate-500">B1</td>
+              <td class="px-5 py-3 text-sm text-slate-600">Storage-B1 → Kitchen-B1</td>
+              <td class="px-5 py-3 text-sm text-slate-400">1h ago</td>
+              <td class="px-5 py-3 text-sm text-slate-400">45 min ago</td>
+            </tr>
+            <tr class="hover:bg-slate-50 cursor-pointer">
+              <td class="px-5 py-3 text-sm text-slate-600">MSN-0040</td>
+              <td class="px-5 py-3 text-sm text-slate-700">Robot-04</td>
+              <td class="px-5 py-3 text-sm text-slate-500">Return</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-600 text-white">DONE</span></td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">LOW</span></td>
+              <td class="px-5 py-3 text-sm text-slate-500">1F</td>
+              <td class="px-5 py-3 text-sm text-slate-600">Room-105 → Home</td>
+              <td class="px-5 py-3 text-sm text-slate-400">1.5h ago</td>
+              <td class="px-5 py-3 text-sm text-slate-400">1h ago</td>
+            </tr>
+            <tr class="hover:bg-slate-50 cursor-pointer bg-red-50/30">
+              <td class="px-5 py-3 text-sm text-slate-600">MSN-0039</td>
+              <td class="px-5 py-3 text-sm text-slate-700">Robot-05</td>
+              <td class="px-5 py-3 text-sm text-slate-500">Delivery</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">FAILED</span></td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">HIGH</span></td>
+              <td class="px-5 py-3 text-sm text-slate-500">2F</td>
+              <td class="px-5 py-3 text-sm text-slate-600">Lab-201 → Office-205</td>
+              <td class="px-5 py-3 text-sm text-slate-400">2h ago</td>
+              <td class="px-5 py-3 text-sm text-red-500">Failed: Localization error</td>
+            </tr>
+            <tr class="hover:bg-slate-50 cursor-pointer">
+              <td class="px-5 py-3 text-sm text-slate-600">MSN-0038</td>
+              <td class="px-5 py-3 text-sm text-slate-700">Robot-02</td>
+              <td class="px-5 py-3 text-sm text-slate-500">Delivery</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-600 text-white">DONE</span></td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">NORMAL</span></td>
+              <td class="px-5 py-3 text-sm text-slate-500">1F</td>
+              <td class="px-5 py-3 text-sm text-slate-600">Lobby → Room-101</td>
+              <td class="px-5 py-3 text-sm text-slate-400">3h ago</td>
+              <td class="px-5 py-3 text-sm text-slate-400">2.5h ago</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="flex items-center justify-between px-5 py-3 border-t border-slate-200">
+          <span class="text-sm text-slate-500">Showing 7 of 44 missions</span>
+          <div class="flex items-center gap-1">
+            <button class="px-3 py-1.5 text-sm border border-slate-200 rounded-lg text-slate-400" disabled>Previous</button>
+            <button class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg">1</button>
+            <button class="px-3 py-1.5 text-sm border border-slate-200 rounded-lg text-slate-700 hover:bg-slate-50">2</button>
+            <button class="px-3 py-1.5 text-sm border border-slate-200 rounded-lg text-slate-700 hover:bg-slate-50">3</button>
+            <button class="px-3 py-1.5 text-sm border border-slate-200 rounded-lg text-slate-700 hover:bg-slate-50">Next</button>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <script src="shared.js"></script>
+  <script>initLayout('missions', 'Missions', '44 total missions');</script>
+</body>
+</html>

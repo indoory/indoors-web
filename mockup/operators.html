@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RobotOps - Operators</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>tailwind.config={theme:{extend:{fontFamily:{sans:['Inter','sans-serif']}}}}</script>
+</head>
+<body class="font-sans bg-slate-50 min-h-screen">
+
+  <div id="sidebar"></div>
+  <div class="ml-60">
+    <div id="header"></div>
+
+    <main class="p-6">
+
+      <!-- My Account -->
+      <div class="bg-white rounded-xl border border-slate-200 p-6 mb-6">
+        <h2 class="text-sm font-semibold text-slate-900 mb-4">My Account</h2>
+        <div class="flex items-center gap-6">
+          <div class="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center text-xl font-bold text-blue-600">OP</div>
+          <div class="flex-1">
+            <div class="text-lg font-semibold text-slate-900">Operator Admin</div>
+            <div class="text-sm text-slate-500">admin@robotops.io</div>
+            <div class="flex items-center gap-2 mt-1">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">ADMIN</span>
+              <span class="text-xs text-slate-400">Last login: Today, 09:00 AM</span>
+            </div>
+          </div>
+          <button class="h-9 px-4 border border-slate-200 text-sm font-medium text-slate-700 rounded-lg hover:bg-slate-50">Edit Profile</button>
+          <button class="h-9 px-4 border border-slate-200 text-sm font-medium text-slate-700 rounded-lg hover:bg-slate-50">Change Password</button>
+        </div>
+      </div>
+
+      <!-- Operator List -->
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-sm font-semibold text-slate-900">All Operators</h2>
+        <button class="flex items-center gap-2 h-9 px-4 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14m-7-7h14"/></svg>
+          Add Operator
+        </button>
+      </div>
+
+      <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <table class="w-full">
+          <thead>
+            <tr class="border-b border-slate-200 bg-slate-50/50">
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3">Operator</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3">Email</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3">Role</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3">Status</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3">Last Login</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3">Created</th>
+              <th class="px-5 py-3"></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100">
+            <tr class="hover:bg-slate-50">
+              <td class="px-5 py-3">
+                <div class="flex items-center gap-3">
+                  <div class="w-9 h-9 bg-blue-100 rounded-full flex items-center justify-center text-sm font-bold text-blue-600">OP</div>
+                  <span class="text-sm font-medium text-slate-900">Operator Admin</span>
+                </div>
+              </td>
+              <td class="px-5 py-3 text-sm text-slate-600">admin@robotops.io</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">ADMIN</span></td>
+              <td class="px-5 py-3"><span class="inline-flex items-center gap-1 text-xs text-emerald-600"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Online</span></td>
+              <td class="px-5 py-3 text-sm text-slate-400">Today, 09:00</td>
+              <td class="px-5 py-3 text-sm text-slate-400">2025-12-01</td>
+              <td class="px-5 py-3">
+                <button class="p-1.5 text-slate-400 hover:text-slate-600 rounded"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button>
+              </td>
+            </tr>
+            <tr class="hover:bg-slate-50">
+              <td class="px-5 py-3">
+                <div class="flex items-center gap-3">
+                  <div class="w-9 h-9 bg-emerald-100 rounded-full flex items-center justify-center text-sm font-bold text-emerald-600">KL</div>
+                  <span class="text-sm font-medium text-slate-900">Kim Lee</span>
+                </div>
+              </td>
+              <td class="px-5 py-3 text-sm text-slate-600">kim.lee@robotops.io</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-700">OPERATOR</span></td>
+              <td class="px-5 py-3"><span class="inline-flex items-center gap-1 text-xs text-slate-400"><span class="w-2 h-2 rounded-full bg-slate-300"></span>Offline</span></td>
+              <td class="px-5 py-3 text-sm text-slate-400">Yesterday, 18:30</td>
+              <td class="px-5 py-3 text-sm text-slate-400">2026-01-15</td>
+              <td class="px-5 py-3">
+                <button class="p-1.5 text-slate-400 hover:text-slate-600 rounded"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button>
+              </td>
+            </tr>
+            <tr class="hover:bg-slate-50">
+              <td class="px-5 py-3">
+                <div class="flex items-center gap-3">
+                  <div class="w-9 h-9 bg-violet-100 rounded-full flex items-center justify-center text-sm font-bold text-violet-600">JP</div>
+                  <span class="text-sm font-medium text-slate-900">Park Joon</span>
+                </div>
+              </td>
+              <td class="px-5 py-3 text-sm text-slate-600">park.joon@robotops.io</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-700">OPERATOR</span></td>
+              <td class="px-5 py-3"><span class="inline-flex items-center gap-1 text-xs text-emerald-600"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Online</span></td>
+              <td class="px-5 py-3 text-sm text-slate-400">Today, 08:45</td>
+              <td class="px-5 py-3 text-sm text-slate-400">2026-02-20</td>
+              <td class="px-5 py-3">
+                <button class="p-1.5 text-slate-400 hover:text-slate-600 rounded"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button>
+              </td>
+            </tr>
+            <tr class="hover:bg-slate-50">
+              <td class="px-5 py-3">
+                <div class="flex items-center gap-3">
+                  <div class="w-9 h-9 bg-amber-100 rounded-full flex items-center justify-center text-sm font-bold text-amber-600">CS</div>
+                  <span class="text-sm font-medium text-slate-900">Choi Soo</span>
+                </div>
+              </td>
+              <td class="px-5 py-3 text-sm text-slate-600">choi.soo@robotops.io</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">VIEWER</span></td>
+              <td class="px-5 py-3"><span class="inline-flex items-center gap-1 text-xs text-slate-400"><span class="w-2 h-2 rounded-full bg-slate-300"></span>Offline</span></td>
+              <td class="px-5 py-3 text-sm text-slate-400">2 days ago</td>
+              <td class="px-5 py-3 text-sm text-slate-400">2026-03-10</td>
+              <td class="px-5 py-3">
+                <button class="p-1.5 text-slate-400 hover:text-slate-600 rounded"><svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Roles Description -->
+      <div class="mt-6 bg-white rounded-xl border border-slate-200 p-5">
+        <h3 class="text-sm font-semibold text-slate-900 mb-3">Role Permissions</h3>
+        <div class="grid grid-cols-3 gap-4">
+          <div class="p-4 bg-blue-50/50 rounded-lg border border-blue-100">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">ADMIN</span>
+            </div>
+            <ul class="text-xs text-slate-600 space-y-1">
+              <li>All operator permissions</li>
+              <li>Manage operators & accounts</li>
+              <li>Activate/deactivate maps</li>
+              <li>System settings</li>
+            </ul>
+          </div>
+          <div class="p-4 bg-emerald-50/50 rounded-lg border border-emerald-100">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-700">OPERATOR</span>
+            </div>
+            <ul class="text-xs text-slate-600 space-y-1">
+              <li>Monitor robot status</li>
+              <li>Create & manage missions</li>
+              <li>Send robot commands</li>
+              <li>View events & logs</li>
+            </ul>
+          </div>
+          <div class="p-4 bg-slate-50 rounded-lg border border-slate-200">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">VIEWER</span>
+            </div>
+            <ul class="text-xs text-slate-600 space-y-1">
+              <li>View dashboard</li>
+              <li>View robot status (read-only)</li>
+              <li>View missions (read-only)</li>
+              <li>View events & logs</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <script src="shared.js"></script>
+  <script>initLayout('operators', 'Operators', 'Account management');</script>
+</body>
+</html>

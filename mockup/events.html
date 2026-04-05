@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RobotOps - Events & Logs</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>tailwind.config={theme:{extend:{fontFamily:{sans:['Inter','sans-serif']}}}}</script>
+</head>
+<body class="font-sans bg-slate-50 min-h-screen">
+
+  <div id="sidebar"></div>
+  <div class="ml-60">
+    <div id="header"></div>
+
+    <main class="p-6">
+
+      <!-- Summary Cards -->
+      <div class="grid grid-cols-4 gap-4 mb-6">
+        <div class="bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3">
+          <div class="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center">
+            <span class="text-lg font-bold text-blue-600">42</span>
+          </div>
+          <div>
+            <div class="text-xs text-slate-500">INFO</div>
+            <div class="text-sm font-medium text-slate-700">Today</div>
+          </div>
+        </div>
+        <div class="bg-white rounded-xl border border-amber-200 p-4 flex items-center gap-3">
+          <div class="w-10 h-10 bg-amber-50 rounded-lg flex items-center justify-center">
+            <span class="text-lg font-bold text-amber-600">7</span>
+          </div>
+          <div>
+            <div class="text-xs text-amber-600 font-medium">WARN</div>
+            <div class="text-sm font-medium text-slate-700">Today</div>
+          </div>
+        </div>
+        <div class="bg-white rounded-xl border border-red-200 p-4 flex items-center gap-3">
+          <div class="w-10 h-10 bg-red-50 rounded-lg flex items-center justify-center">
+            <span class="text-lg font-bold text-red-600">3</span>
+          </div>
+          <div>
+            <div class="text-xs text-red-600 font-medium">ERROR</div>
+            <div class="text-sm font-medium text-slate-700">Today</div>
+          </div>
+        </div>
+        <div class="bg-white rounded-xl border border-red-300 p-4 flex items-center gap-3">
+          <div class="w-10 h-10 bg-red-100 rounded-lg flex items-center justify-center">
+            <span class="text-lg font-bold text-red-700">0</span>
+          </div>
+          <div>
+            <div class="text-xs text-red-700 font-medium">CRITICAL</div>
+            <div class="text-sm font-medium text-slate-700">Today</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Filters -->
+      <div class="bg-white rounded-xl border border-slate-200 p-4 mb-6">
+        <div class="flex items-center gap-3">
+          <div class="relative flex-1 max-w-sm">
+            <svg class="w-4 h-4 text-slate-400 absolute left-3 top-2.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            <input type="text" placeholder="Search events..." class="w-full h-9 pl-9 pr-4 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+          </div>
+          <select class="h-9 px-3 text-sm border border-slate-200 rounded-lg bg-white text-slate-700">
+            <option>All Severity</option>
+            <option>INFO</option>
+            <option>WARN</option>
+            <option>ERROR</option>
+            <option>CRITICAL</option>
+          </select>
+          <select class="h-9 px-3 text-sm border border-slate-200 rounded-lg bg-white text-slate-700">
+            <option>All Robots</option>
+            <option>Robot-01</option>
+            <option>Robot-02</option>
+            <option>Robot-03</option>
+            <option>Robot-05</option>
+          </select>
+          <select class="h-9 px-3 text-sm border border-slate-200 rounded-lg bg-white text-slate-700">
+            <option>All Types</option>
+            <option>LOCALIZATION</option>
+            <option>BATTERY</option>
+            <option>MISSION</option>
+            <option>NAVIGATION</option>
+            <option>SYSTEM</option>
+          </select>
+          <input type="date" class="h-9 px-3 text-sm border border-slate-200 rounded-lg bg-white text-slate-700">
+          <span class="text-sm text-slate-400">to</span>
+          <input type="date" class="h-9 px-3 text-sm border border-slate-200 rounded-lg bg-white text-slate-700">
+        </div>
+      </div>
+
+      <!-- Event Log Table -->
+      <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <table class="w-full">
+          <thead>
+            <tr class="border-b border-slate-200 bg-slate-50/50">
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3 w-40">Time</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3 w-24">Severity</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3 w-28">Robot</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3 w-28">Type</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3">Message</th>
+              <th class="text-left text-xs font-medium text-slate-500 uppercase tracking-wider px-5 py-3 w-28">Mission</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100 text-sm">
+
+            <!-- ERROR -->
+            <tr class="hover:bg-red-50/50 border-l-4 border-l-red-500 bg-red-50/30">
+              <td class="px-5 py-3 text-slate-500 font-mono text-xs">11:02:14</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-700">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                ERROR</span></td>
+              <td class="px-5 py-3 text-slate-700 font-medium">Robot-05</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">LOCALIZATION</span></td>
+              <td class="px-5 py-3 text-slate-700">Localization failure detected - particle spread exceeded threshold (σ=2.4m)</td>
+              <td class="px-5 py-3 text-blue-600 font-medium">MSN-0039</td>
+            </tr>
+
+            <!-- WARN -->
+            <tr class="hover:bg-amber-50/50 border-l-4 border-l-amber-400 bg-amber-50/20">
+              <td class="px-5 py-3 text-slate-500 font-mono text-xs">10:56:08</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-700">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                WARN</span></td>
+              <td class="px-5 py-3 text-slate-700 font-medium">Robot-03</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">BATTERY</span></td>
+              <td class="px-5 py-3 text-slate-700">Battery level below 15% threshold (current: 12%)</td>
+              <td class="px-5 py-3 text-slate-400">--</td>
+            </tr>
+
+            <!-- WARN -->
+            <tr class="hover:bg-amber-50/50 border-l-4 border-l-amber-400">
+              <td class="px-5 py-3 text-slate-500 font-mono text-xs">10:48:33</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-700">WARN</span></td>
+              <td class="px-5 py-3 text-slate-700 font-medium">Robot-07</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">BATTERY</span></td>
+              <td class="px-5 py-3 text-slate-700">Battery level below 20% threshold (current: 18%)</td>
+              <td class="px-5 py-3 text-slate-400">--</td>
+            </tr>
+
+            <!-- INFO -->
+            <tr class="hover:bg-slate-50 border-l-4 border-l-blue-400">
+              <td class="px-5 py-3 text-slate-500 font-mono text-xs">10:42:17</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-blue-100 text-blue-700">INFO</span></td>
+              <td class="px-5 py-3 text-slate-700">Robot-01</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">MISSION</span></td>
+              <td class="px-5 py-3 text-slate-600">Mission MSN-0041 completed successfully (duration: 18m 42s)</td>
+              <td class="px-5 py-3 text-blue-600">MSN-0041</td>
+            </tr>
+
+            <!-- INFO -->
+            <tr class="hover:bg-slate-50 border-l-4 border-l-blue-400">
+              <td class="px-5 py-3 text-slate-500 font-mono text-xs">10:35:51</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-blue-100 text-blue-700">INFO</span></td>
+              <td class="px-5 py-3 text-slate-700">Robot-02</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">MISSION</span></td>
+              <td class="px-5 py-3 text-slate-600">Started mission MSN-0043 (Delivery: Reception → Room-108)</td>
+              <td class="px-5 py-3 text-blue-600">MSN-0043</td>
+            </tr>
+
+            <!-- INFO -->
+            <tr class="hover:bg-slate-50 border-l-4 border-l-blue-400">
+              <td class="px-5 py-3 text-slate-500 font-mono text-xs">10:28:09</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-blue-100 text-blue-700">INFO</span></td>
+              <td class="px-5 py-3 text-slate-700">Robot-06</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">NAVIGATION</span></td>
+              <td class="px-5 py-3 text-slate-600">Floor switch completed: B1 → 1F (elevator transit: 45s)</td>
+              <td class="px-5 py-3 text-slate-400">--</td>
+            </tr>
+
+            <!-- WARN -->
+            <tr class="hover:bg-amber-50/50 border-l-4 border-l-amber-400">
+              <td class="px-5 py-3 text-slate-500 font-mono text-xs">10:15:22</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-700">WARN</span></td>
+              <td class="px-5 py-3 text-slate-700 font-medium">Robot-01</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">NAVIGATION</span></td>
+              <td class="px-5 py-3 text-slate-700">Path replanning triggered - obstacle detected on planned route</td>
+              <td class="px-5 py-3 text-blue-600">MSN-0042</td>
+            </tr>
+
+            <!-- ERROR -->
+            <tr class="hover:bg-red-50/50 border-l-4 border-l-red-500 bg-red-50/30">
+              <td class="px-5 py-3 text-slate-500 font-mono text-xs">09:58:41</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-700">ERROR</span></td>
+              <td class="px-5 py-3 text-slate-700 font-medium">Robot-05</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">SYSTEM</span></td>
+              <td class="px-5 py-3 text-slate-700">IMU sensor data timeout - no data received for 5s</td>
+              <td class="px-5 py-3 text-slate-400">--</td>
+            </tr>
+
+            <!-- INFO -->
+            <tr class="hover:bg-slate-50 border-l-4 border-l-blue-400">
+              <td class="px-5 py-3 text-slate-500 font-mono text-xs">09:45:03</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-blue-100 text-blue-700">INFO</span></td>
+              <td class="px-5 py-3 text-slate-700">Robot-04</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">MISSION</span></td>
+              <td class="px-5 py-3 text-slate-600">Mission MSN-0040 completed (Return to home)</td>
+              <td class="px-5 py-3 text-blue-600">MSN-0040</td>
+            </tr>
+
+            <!-- INFO -->
+            <tr class="hover:bg-slate-50 border-l-4 border-l-blue-400">
+              <td class="px-5 py-3 text-slate-500 font-mono text-xs">09:30:18</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-blue-100 text-blue-700">INFO</span></td>
+              <td class="px-5 py-3 text-slate-700">System</td>
+              <td class="px-5 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">SYSTEM</span></td>
+              <td class="px-5 py-3 text-slate-600">Admin Bridge connected - 6 robots online</td>
+              <td class="px-5 py-3 text-slate-400">--</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="flex items-center justify-between px-5 py-3 border-t border-slate-200">
+          <span class="text-sm text-slate-500">Showing 10 of 52 events</span>
+          <div class="flex items-center gap-1">
+            <button class="px-3 py-1.5 text-sm border border-slate-200 rounded-lg text-slate-400" disabled>Previous</button>
+            <button class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg">1</button>
+            <button class="px-3 py-1.5 text-sm border border-slate-200 rounded-lg text-slate-700 hover:bg-slate-50">2</button>
+            <button class="px-3 py-1.5 text-sm border border-slate-200 rounded-lg text-slate-700 hover:bg-slate-50">3</button>
+            <button class="px-3 py-1.5 text-sm border border-slate-200 rounded-lg text-slate-700 hover:bg-slate-50">Next</button>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <script src="shared.js"></script>
+  <script>initLayout('events', 'Events & Logs', '52 events today');</script>
+</body>
+</html>

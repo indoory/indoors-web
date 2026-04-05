@@ -1,0 +1,17 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: indoory-postgres
+    environment:
+      POSTGRES_DB: indoory
+      POSTGRES_USER: indoory
+      POSTGRES_PASSWORD: indoory
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U indoory -d indoory"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
