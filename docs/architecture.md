@@ -15,10 +15,22 @@ The MVP is intentionally split into a thin React control UI and a Java backend t
 
 ### Backend
 
-- Controllers expose HTTP APIs.
-- Services hold orchestration logic such as login, task assignment, command handling, and simulation.
-- Repositories persist and query state from PostgreSQL through JPA.
+- `api`: presentation controllers only.
+- `service`: application services and orchestration logic.
+- `entity`: domain state plus explicit domain behavior methods.
+- `repository`: persistence adapters over JPA.
+- `config`: session auth and infrastructure wiring.
 - Flyway defines the schema and seed data.
+
+## Backend rules
+
+- Public setters on domain entities are intentionally avoided.
+- Entities that are created in code use builder or factory entry points such as `TaskEntity.createDelivery(...)`.
+- State transitions happen through domain methods such as `task.assignTo(...)`, `task.complete(...)`, and `robot.markPlanning(...)`.
+- Enums remain separated as standalone types.
+- Services may reference other services when orchestration needs it. Other layers stay one-way and are guarded by ArchUnit tests.
+- Google Java Style is enforced by Spotless with `googleJavaFormat`.
+- TDD is the default workflow baseline for backend changes. The repository includes unit tests for dispatch policy, domain lifecycle behavior, and layered architecture rules.
 
 ## Runtime flow
 

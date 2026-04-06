@@ -50,6 +50,7 @@ cd backend
 ```
 
 The backend listens on `http://localhost:8080`.
+Swagger UI is available at `http://localhost:8080/swagger-ui.html`.
 
 ### 3. Run the frontend
 
@@ -83,3 +84,6 @@ The frontend uses:
 - `Task` terminology is used everywhere. Legacy `mission` naming has been removed.
 - Git uses a single root `.gitignore`.
 - The backend currently simulates ROS execution through a scheduled adapter loop so the control UI stays live without a hardware dependency.
+- Backend Java code is formatted with Google Java Format through Spotless.
+- Backend domain entities avoid public setters and expose behavior through builder/factory and domain methods.
+- ArchUnit tests enforce the layered contract: `api`, `service`, `repository`, `entity`, and `config`.

@@ -1,7 +1,12 @@
 package com.indoory.backend.api;
 
+import com.indoory.backend.config.SessionOperator;
+import com.indoory.backend.service.RobotService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import java.util.List;
-
+import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -11,83 +16,104 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.indoory.backend.config.SessionOperator;
-import com.indoory.backend.service.RobotService;
-
-import jakarta.validation.Valid;
-import lombok.RequiredArgsConstructor;
-
 @RestController
 @RequestMapping("/api/robots")
 @RequiredArgsConstructor
+@Tag(name = "Robots", description = "Robot inventory, state, pose, command, and history endpoints")
 public class RobotController {
 
-	private final RobotService robotService;
+  private final RobotService robotService;
 
-	@GetMapping
-	public List<ApiDtos.RobotSummaryResponse> getRobots() {
-		return robotService.getRobots();
-	}
+  @Operation(summary = "List robots", description = "Returns the full robot fleet summary.")
+  @GetMapping
+  public List<ApiDtos.RobotSummaryResponse> getRobots() {
+    return robotService.getRobots();
+  }
 
-	@GetMapping("/{robotId}")
-	public ApiDtos.RobotDetailResponse getRobot(@PathVariable Long robotId) {
-		return robotService.getRobot(robotId);
-	}
+  @Operation(
+      summary = "Get robot detail",
+      description = "Returns robot state, pose, active task, command history, and telemetry logs.")
+  @GetMapping("/{robotId}")
+  public ApiDtos.RobotDetailResponse getRobot(@PathVariable Long robotId) {
+    return robotService.getRobot(robotId);
+  }
 
-	@GetMapping("/{robotId}/state")
-	public ApiDtos.RobotStateResponse getRobotState(@PathVariable Long robotId) {
-		return robotService.getRobotState(robotId);
-	}
+  @Operation(
+      summary = "Get robot state",
+      description = "Returns the latest status and health information for a robot.")
+  @GetMapping("/{robotId}/state")
+  public ApiDtos.RobotStateResponse getRobotState(@PathVariable Long robotId) {
+    return robotService.getRobotState(robotId);
+  }
 
-	@GetMapping("/{robotId}/pose")
-	public ApiDtos.RobotPoseResponse getRobotPose(@PathVariable Long robotId) {
-		return robotService.getRobotPose(robotId);
-	}
+  @Operation(
+      summary = "Get robot pose",
+      description = "Returns the latest pose for a robot on the active map.")
+  @GetMapping("/{robotId}/pose")
+  public ApiDtos.RobotPoseResponse getRobotPose(@PathVariable Long robotId) {
+    return robotService.getRobotPose(robotId);
+  }
 
-	@PatchMapping("/{robotId}/label")
-	public ApiDtos.RobotSummaryResponse renameRobot(
-		@PathVariable Long robotId,
-		@Valid @RequestBody ApiDtos.RobotLabelRequest request
-	) {
-		return robotService.renameRobot(robotId, request);
-	}
+  @Operation(summary = "Rename robot", description = "Updates the operator-visible robot label.")
+  @PatchMapping("/{robotId}/label")
+  public ApiDtos.RobotSummaryResponse renameRobot(
+      @PathVariable Long robotId, @Valid @RequestBody ApiDtos.RobotLabelRequest request) {
+    return robotService.renameRobot(robotId, request);
+  }
 
-	@GetMapping("/{robotId}/tasks")
-	public List<ApiDtos.TaskSummaryResponse> getRobotTasks(@PathVariable Long robotId) {
-		return robotService.getRobotTasks(robotId);
-	}
+  @Operation(
+      summary = "Get robot task history",
+      description = "Returns tasks previously assigned to a robot.")
+  @GetMapping("/{robotId}/tasks")
+  public List<ApiDtos.TaskSummaryResponse> getRobotTasks(@PathVariable Long robotId) {
+    return robotService.getRobotTasks(robotId);
+  }
 
-	@GetMapping("/{robotId}/commands")
-	public List<ApiDtos.CommandLogResponse> getRobotCommands(@PathVariable Long robotId) {
-		return robotService.getRobotCommands(robotId);
-	}
+  @Operation(summary = "Get command history", description = "Returns command history for a robot.")
+  @GetMapping("/{robotId}/commands")
+  public List<ApiDtos.CommandLogResponse> getRobotCommands(@PathVariable Long robotId) {
+    return robotService.getRobotCommands(robotId);
+  }
 
-	@GetMapping("/{robotId}/logs")
-	public List<ApiDtos.RobotStateSnapshotResponse> getRobotLogs(@PathVariable Long robotId) {
-		return robotService.getRobotLogs(robotId);
-	}
+  @Operation(
+      summary = "Get telemetry logs",
+      description = "Returns the latest robot state snapshots.")
+  @GetMapping("/{robotId}/logs")
+  public List<ApiDtos.RobotStateSnapshotResponse> getRobotLogs(@PathVariable Long robotId) {
+    return robotService.getRobotLogs(robotId);
+  }
 
-	@PostMapping("/{robotId}/commands/dispatch")
-	public void dispatch(
-		@PathVariable Long robotId,
-		@Valid @RequestBody ApiDtos.DispatchCommandRequest request,
-		Authentication authentication
-	) {
-		robotService.dispatch(robotId, request, (SessionOperator) authentication.getPrincipal());
-	}
+  @Operation(
+      summary = "Dispatch robot",
+      description = "Sends a direct robot dispatch command to a target location.")
+  @PostMapping("/{robotId}/commands/dispatch")
+  public void dispatch(
+      @PathVariable Long robotId,
+      @Valid @RequestBody ApiDtos.DispatchCommandRequest request,
+      Authentication authentication) {
+    robotService.dispatch(robotId, request, (SessionOperator) authentication.getPrincipal());
+  }
 
-	@PostMapping("/{robotId}/commands/pause")
-	public void pause(@PathVariable Long robotId, Authentication authentication) {
-		robotService.pause(robotId, (SessionOperator) authentication.getPrincipal());
-	}
+  @Operation(
+      summary = "Pause robot task",
+      description = "Pauses the active task currently assigned to the robot.")
+  @PostMapping("/{robotId}/commands/pause")
+  public void pause(@PathVariable Long robotId, Authentication authentication) {
+    robotService.pause(robotId, (SessionOperator) authentication.getPrincipal());
+  }
 
-	@PostMapping("/{robotId}/commands/resume")
-	public void resume(@PathVariable Long robotId, Authentication authentication) {
-		robotService.resume(robotId, (SessionOperator) authentication.getPrincipal());
-	}
+  @Operation(summary = "Resume robot task", description = "Resumes a paused task on the robot.")
+  @PostMapping("/{robotId}/commands/resume")
+  public void resume(@PathVariable Long robotId, Authentication authentication) {
+    robotService.resume(robotId, (SessionOperator) authentication.getPrincipal());
+  }
 
-	@PostMapping("/{robotId}/commands/emergency-stop")
-	public void emergencyStop(@PathVariable Long robotId, Authentication authentication) {
-		robotService.emergencyStop(robotId, (SessionOperator) authentication.getPrincipal());
-	}
+  @Operation(
+      summary = "Emergency stop",
+      description =
+          "Immediately transitions the robot into emergency stop and fails its active task.")
+  @PostMapping("/{robotId}/commands/emergency-stop")
+  public void emergencyStop(@PathVariable Long robotId, Authentication authentication) {
+    robotService.emergencyStop(robotId, (SessionOperator) authentication.getPrincipal());
+  }
 }
