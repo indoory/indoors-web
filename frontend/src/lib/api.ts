@@ -4,6 +4,7 @@ import type {
   DispatchCommandRequest,
   EventLog,
   FloorPlan,
+  InitialPoseRequest,
   LoginResponse,
   MapMetadata,
   OperatorProfile,
@@ -11,10 +12,14 @@ import type {
   RobotLabelRequest,
   RobotPose,
   RobotState,
-  RobotStateSnapshot,
   RobotSummary,
+  SetNav2YamlUrlRequest,
+  SlamExploreStatus,
+  SlamSaveRequest,
   TaskDetail,
   TaskSummary,
+  CreateRobotRequest,
+  CreateMapRequest,
 } from '../types/api'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
@@ -92,10 +97,6 @@ export function getRobotCommands(robotId: string) {
   return request(`/api/robots/${robotId}/commands`)
 }
 
-export function getRobotLogs(robotId: string) {
-  return request<RobotStateSnapshot[]>(`/api/robots/${robotId}/logs`)
-}
-
 export function renameRobot(robotId: string, payload: RobotLabelRequest) {
   return request<RobotSummary>(`/api/robots/${robotId}/label`, {
     method: 'PATCH',
@@ -153,6 +154,13 @@ export function getMaps() {
   return request<MapMetadata[]>('/api/maps')
 }
 
+export function createMap(payload: CreateMapRequest) {
+  return request<MapMetadata>('/api/maps', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function getCurrentMap() {
   return request<CurrentMapResponse>('/api/maps/current')
 }
@@ -184,4 +192,54 @@ export function getEvents() {
 
 export function getEvent(eventId: number | string) {
   return request<EventLog>(`/api/events/${eventId}`)
+}
+
+// ── Robots ──────────────────────────────────────────────────────────────────
+
+export function createRobot(payload: CreateRobotRequest) {
+  return request<RobotSummary>('/api/robots', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function setInitialPose(robotId: number | string, payload: InitialPoseRequest) {
+  return request<void>(`/api/robots/${robotId}/initial-pose`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+// ── SLAM ────────────────────────────────────────────────────────────────────
+
+export function startSlam(robotId: number | string) {
+  return request<void>(`/api/robots/${robotId}/slam/start`, { method: 'POST' })
+}
+
+export function startSlamExplore(robotId: number | string) {
+  return request<void>(`/api/robots/${robotId}/slam/explore/start`, { method: 'POST' })
+}
+
+export function getSlamExploreStatus(robotId: number | string) {
+  return request<SlamExploreStatus>(`/api/robots/${robotId}/slam/explore/status`)
+}
+
+export function saveSlamMap(robotId: number | string, payload: SlamSaveRequest) {
+  return request<void>(`/api/robots/${robotId}/slam/save`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function stopSlam(robotId: number | string) {
+  return request<void>(`/api/robots/${robotId}/slam/stop`, { method: 'POST' })
+}
+
+// ── Maps ─────────────────────────────────────────────────────────────────────
+
+export function setMapNav2YamlUrl(mapId: number | string, payload: SetNav2YamlUrlRequest) {
+  return request<void>(`/api/maps/${mapId}/nav2-yaml-url`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
 }

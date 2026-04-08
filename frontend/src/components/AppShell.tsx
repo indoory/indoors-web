@@ -5,7 +5,6 @@ import {
   LayoutDashboard,
   LogOut,
   Map,
-  ShieldCheck,
   SquareCheckBig,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
@@ -46,112 +45,100 @@ export function AppShell({
   const operator = session.data
 
   return (
-    <div className="min-h-screen bg-[var(--canvas)] text-slate-900">
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-[var(--sidebar-border)] bg-[var(--sidebar)] px-4 py-5 md:flex">
-        <div className="flex items-center gap-3 px-2">
-          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sky-500/15 text-sky-300 ring-1 ring-inset ring-sky-400/30">
-            <Bot className="h-5 w-5" />
-          </div>
-          <div>
-            <div className="text-sm font-semibold uppercase tracking-[0.24em] text-sky-200">
-              Indoory
+    <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
+      {/* Sidebar */}
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-slate-800 bg-slate-900 text-slate-400 md:flex">
+        {/* Logo */}
+        <div className="flex h-14 items-center border-b border-slate-800 px-5">
+          <div className="flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600">
+              <Bot className="h-5 w-5 text-white" />
             </div>
-            <div className="mt-1 text-xs text-slate-400">Indoor robot control</div>
+            <span className="text-lg font-bold text-white">Indoory</span>
           </div>
         </div>
 
-        <nav className="mt-8 space-y-1">
+        {/* Nav */}
+        <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
           {navItems.map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
               className={({ isActive }) =>
                 cn(
-                  'flex items-center gap-3 rounded-2xl px-3 py-3 text-sm font-medium transition',
+                  'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
                   isActive
-                    ? 'bg-white text-slate-950 shadow-[0_20px_40px_rgba(15,23,42,0.18)]'
-                    : 'text-slate-300 hover:bg-slate-800/80 hover:text-white',
+                    ? 'bg-slate-800 text-white'
+                    : 'text-slate-400 hover:bg-slate-800/50 hover:text-white',
                 )
               }
               to={to}
             >
-              <Icon className="h-4.5 w-4.5" />
+              <Icon className="h-5 w-5" />
               {label}
             </NavLink>
           ))}
         </nav>
 
-        <div className="mt-auto rounded-[28px] border border-slate-700/70 bg-slate-800/70 p-4 text-sm text-slate-300">
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.24em] text-emerald-300">
-            <ShieldCheck className="h-4 w-4" />
-            Simulated ROS adapter
+        {/* System status */}
+        <div className="border-t border-slate-800 px-3 py-4">
+          <div className="flex items-center gap-2 px-3 text-xs text-slate-500">
+            <span className="h-2 w-2 rounded-full bg-emerald-500" />
+            System Online
           </div>
-          <p className="mt-2 text-xs leading-5 text-slate-400">
-            Web control commands are routed through the Java backend adapter and replayed
-            with seeded robot telemetry.
-          </p>
         </div>
       </aside>
 
       <div className="md:pl-60">
-        <header className="sticky top-0 z-20 border-b border-white/70 bg-white/70 backdrop-blur">
-          <div className="mx-auto max-w-[1500px] px-4 py-4 sm:px-6">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-700">
-                  Indoory Control
-                </div>
-                <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{title}</h1>
-                <p className="mt-1 text-sm text-slate-500">{subtitle}</p>
-              </div>
+        {/* Header */}
+        <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-slate-200 bg-white px-6">
+          <div>
+            <h1 className="text-lg font-semibold text-slate-900">{title}</h1>
+            {subtitle ? <p className="text-xs text-slate-500">{subtitle}</p> : null}
+          </div>
 
-              <div className="flex items-center justify-between gap-4 lg:justify-end">
-                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-medium text-emerald-700">
-                  Backend adapter online
-                </div>
-                <div className="flex items-center gap-3 rounded-[24px] border border-slate-200 bg-white/90 px-3 py-2 shadow-[0_18px_40px_rgba(15,23,42,0.08)]">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-900 text-sm font-semibold text-white">
-                    {initials(operator?.name ?? 'IO')}
-                  </div>
-                  <div className="hidden sm:block">
-                    <div className="text-sm font-semibold text-slate-900">{operator?.name ?? 'Operator'}</div>
-                    <div className="text-xs text-slate-500">{operator?.role ?? 'ADMIN'}</div>
-                  </div>
-                  <button
-                    className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
-                    onClick={() => logoutMutation.mutate()}
-                    type="button"
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      <LogOut className="h-4 w-4" />
-                      Sign out
-                    </span>
-                  </button>
-                </div>
+          <div className="flex items-center gap-4">
+            {/* Operator profile */}
+            <div className="flex items-center gap-2 border-l border-slate-200 pl-4">
+              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-200 text-sm font-medium text-slate-600">
+                {initials(operator?.name ?? 'IO')}
               </div>
+              <div className="hidden sm:block">
+                <div className="text-sm font-medium text-slate-700">{operator?.name ?? 'Operator'}</div>
+                <div className="text-xs text-slate-400">{operator?.role ?? 'ADMIN'}</div>
+              </div>
+              <button
+                className="ml-1 rounded-lg border border-slate-200 p-1.5 text-slate-500 transition hover:bg-slate-50 hover:text-slate-700"
+                onClick={() => logoutMutation.mutate()}
+                title="Sign out"
+                type="button"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
             </div>
-
-            <nav className="mt-4 flex gap-2 overflow-x-auto pb-1 md:hidden">
-              {navItems.map(({ to, label }) => (
-                <NavLink
-                  key={to}
-                  className={({ isActive }) =>
-                    cn(
-                      'rounded-full border px-4 py-2 text-sm font-medium transition',
-                      isActive
-                        ? 'border-sky-500 bg-sky-500 text-white'
-                        : 'border-slate-200 bg-white text-slate-600',
-                    )
-                  }
-                  to={to}
-                >
-                  {label}
-                </NavLink>
-              ))}
-            </nav>
           </div>
         </header>
 
-        <main className="mx-auto max-w-[1500px] px-4 py-6 sm:px-6">{children}</main>
+        {/* Mobile nav */}
+        <nav className="flex gap-1 overflow-x-auto border-b border-slate-200 bg-white px-4 py-2 md:hidden">
+          {navItems.map(({ to, label }) => (
+            <NavLink
+              key={to}
+              className={({ isActive }) =>
+                cn(
+                  'whitespace-nowrap rounded-lg border px-3 py-1.5 text-sm font-medium transition',
+                  isActive
+                    ? 'border-blue-500 bg-blue-600 text-white'
+                    : 'border-slate-200 bg-white text-slate-600',
+                )
+              }
+              to={to}
+            >
+              {label}
+            </NavLink>
+          ))}
+        </nav>
+
+        <main className="p-6">{children}</main>
       </div>
     </div>
   )

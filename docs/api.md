@@ -17,7 +17,6 @@ This MVP normalizes the original CSV into `task` terminology and fixes path typo
 - `PATCH /api/robots/{robotId}/label`
 - `GET /api/robots/{robotId}/tasks`
 - `GET /api/robots/{robotId}/commands`
-- `GET /api/robots/{robotId}/logs`
 - `POST /api/robots/{robotId}/commands/dispatch`
 - `POST /api/robots/{robotId}/commands/pause`
 - `POST /api/robots/{robotId}/commands/resume`

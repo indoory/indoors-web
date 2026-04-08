@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowRight, Pause, Play, Radio, Route, ShieldAlert } from 'lucide-react'
-import { useState } from 'react'
+import { ArrowRight, ChevronLeft } from 'lucide-react'
+import { type ReactNode, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { AppShell } from '../components/AppShell'
 import { LoadingView } from '../components/LoadingView'
@@ -14,13 +14,14 @@ import {
   pauseRobot,
   resumeRobot,
 } from '../lib/api'
-import { formatDateTime, formatRelativeTime, toTitle } from '../lib/utils'
+import { formatDateTime, formatRelativeTime } from '../lib/utils'
 
 export function RobotDetailPage() {
   const { robotId = '' } = useParams()
   const queryClient = useQueryClient()
-  const [selectedTab, setSelectedTab] = useState<'commands' | 'events' | 'tasks' | 'logs'>('commands')
+  const [selectedTab, setSelectedTab] = useState<'commands' | 'events' | 'tasks'>('commands')
   const [dispatchLocationId, setDispatchLocationId] = useState<number | null>(null)
+  const [showEstopModal, setShowEstopModal] = useState(false)
 
   const robotQuery = useQuery({
     queryKey: ['robot', robotId],
@@ -46,23 +47,12 @@ export function RobotDetailPage() {
   const commandMutation = useMutation({
     mutationFn: async (action: 'dispatch' | 'pause' | 'resume' | 'emergency-stop') => {
       if (action === 'dispatch') {
-        if (!selectedDispatchLocationId) {
-          return
-        }
+        if (!selectedDispatchLocationId) return
         await dispatchRobot(robotId, { locationId: selectedDispatchLocationId })
         return
       }
-
-      if (action === 'pause') {
-        await pauseRobot(robotId)
-        return
-      }
-
-      if (action === 'resume') {
-        await resumeRobot(robotId)
-        return
-      }
-
+      if (action === 'pause') { await pauseRobot(robotId); return }
+      if (action === 'resume') { await resumeRobot(robotId); return }
       await emergencyStopRobot(robotId)
     },
     onSuccess: async () => {
@@ -84,351 +74,396 @@ export function RobotDetailPage() {
     )
   }
 
+  const { robot, state, pose, activeTask, commandHistory, events, taskHistory } = robotDetail
+
   return (
     <AppShell
-      subtitle={`${robotDetail.robot.robotCode} · Last updated ${formatRelativeTime(robotDetail.robot.updatedAt)}`}
-      title={robotDetail.robot.label}
+      subtitle={`${robot.robotCode} · Last updated ${formatRelativeTime(robot.updatedAt)}`}
+      title={robot.label}
     >
-      <div className="grid gap-6 xl:grid-cols-[1fr_1.7fr]">
-        <section className="rounded-[28px] border border-white/70 bg-white/88 p-5 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm font-semibold text-slate-950">Robot information</div>
-              <div className="mt-1 text-xs text-slate-500">Live state from the adapter snapshot.</div>
-            </div>
-            <StatusBadge value={robotDetail.robot.status} />
+      {/* Breadcrumb + Status */}
+      <div className="mb-6 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Link className="flex items-center gap-1 text-sm text-slate-500 transition hover:text-blue-600" to="/robots">
+            <ChevronLeft className="h-4 w-4" />
+            Robots
+          </Link>
+          <svg className="h-4 w-4 text-slate-300" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <path d="m9 18 6-6-6-6" />
+          </svg>
+          <div className="flex items-center gap-2">
+            <span className="text-lg font-bold text-slate-900">{robot.label}</span>
+            <StatusBadge value={robot.status} />
+            <span className="inline-flex items-center rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
+              {robot.robotCode}
+            </span>
           </div>
+        </div>
+        <div className="flex items-center gap-1.5 text-xs text-slate-400">
+          <span className={`inline-block h-2 w-2 rounded-full ${state.online ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+          {state.online ? 'Online' : 'Offline'} · Last updated: {formatRelativeTime(state.updatedAt)}
+        </div>
+      </div>
 
-          <div className="mt-5 space-y-3 text-sm">
-            <Row label="Robot code" value={robotDetail.robot.robotCode} />
-            <Row label="Battery" value={`${robotDetail.state.batteryLevel}%`} />
-            <Row label="Floor" value={robotDetail.robot.floorCode} />
-            <Row label="Map" value={robotDetail.robot.mapName} />
-            <Row label="Environment" value={robotDetail.state.environment} />
-            <Row label="Localization" value={robotDetail.state.localizationState} />
-            <Row
-              label="Pose"
-              value={`${robotDetail.pose.x.toFixed(1)}, ${robotDetail.pose.y.toFixed(1)} / ${robotDetail.pose.yawDeg.toFixed(0)}°`}
+      {/* Top Row: Info + Map */}
+      <div className="mb-6 grid grid-cols-3 gap-6">
+        {/* Robot Info Card */}
+        <div className="rounded-xl border border-slate-200 bg-white p-5">
+          <h2 className="mb-4 text-sm font-semibold text-slate-900">Robot Information</h2>
+
+          <div className="space-y-0">
+            <InfoRow label="Status" value={<StatusBadge value={robot.status} />} />
+            <InfoRow
+              label="Battery"
+              value={
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-24 rounded-full bg-slate-100">
+                    <div
+                      className={`h-2 rounded-full ${state.batteryLevel < 20 ? 'bg-red-500' : 'bg-emerald-500'}`}
+                      style={{ width: `${state.batteryLevel}%` }}
+                    />
+                  </div>
+                  <span className="text-sm font-semibold text-slate-700">{state.batteryLevel}%</span>
+                </div>
+              }
             />
+            <InfoRow label="Floor" value={robot.floorCode} />
+            <InfoRow label="Map" value={robot.mapName} />
+            <InfoRow label="Environment" value={state.environment} />
+            <InfoRow label="Localization" value={state.localizationState} />
           </div>
 
-          {robotDetail.state.warning ? (
-            <div className="mt-4 rounded-3xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              <div className="flex items-start gap-2">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>{robotDetail.state.warning}</span>
-              </div>
+          {state.warning ? (
+            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-800">
+              ⚠ {state.warning}
             </div>
           ) : null}
 
-          <div className="mt-6">
-            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Commands
+          {/* Pose summary */}
+          <div className="mt-4 rounded-lg bg-slate-50 p-3">
+            <div className="mb-2 text-xs font-medium text-slate-500">Pose</div>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div>
+                <div className="text-lg font-bold text-slate-900">{pose.x.toFixed(2)}</div>
+                <div className="text-[10px] uppercase text-slate-400">X (m)</div>
+              </div>
+              <div>
+                <div className="text-lg font-bold text-slate-900">{pose.y.toFixed(2)}</div>
+                <div className="text-[10px] uppercase text-slate-400">Y (m)</div>
+              </div>
+              <div>
+                <div className="text-lg font-bold text-slate-900">{pose.yawDeg.toFixed(1)}</div>
+                <div className="text-[10px] uppercase text-slate-400">Yaw (°)</div>
+              </div>
             </div>
-            <div className="mt-3 space-y-3">
-              <div className="flex gap-2">
-                <select
-                  className="h-11 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm text-slate-700 outline-none focus:border-sky-400 focus:bg-white"
-                  onChange={(event) => setDispatchLocationId(Number(event.target.value))}
-                  value={selectedDispatchLocationId ?? undefined}
-                >
-                  {dispatchLocations.map((location) => (
-                    <option key={location.id} value={location.id}>
-                      {location.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  className="inline-flex h-11 items-center gap-2 rounded-2xl bg-sky-600 px-4 text-sm font-semibold text-white transition hover:bg-sky-700"
-                  onClick={() => commandMutation.mutate('dispatch')}
-                  type="button"
-                >
-                  <Route className="h-4 w-4" />
-                  Dispatch
-                </button>
-              </div>
+          </div>
+        </div>
 
-              <div className="grid gap-2 sm:grid-cols-2">
-                <button
-                  className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-amber-500 px-4 text-sm font-semibold text-white transition hover:bg-amber-600"
-                  onClick={() => commandMutation.mutate('pause')}
-                  type="button"
-                >
-                  <Pause className="h-4 w-4" />
-                  Pause
-                </button>
-                <button
-                  className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 text-sm font-semibold text-white transition hover:bg-emerald-700"
-                  onClick={() => commandMutation.mutate('resume')}
-                  type="button"
-                >
-                  <Play className="h-4 w-4" />
-                  Resume
-                </button>
-              </div>
+        {/* Map (2 cols) */}
+        <div className="col-span-2">
+          {currentMap && currentFloor ? (
+            <MapCanvas floor={currentFloor} map={currentMap} />
+          ) : (
+            <div className="flex h-full items-center justify-center rounded-xl border border-slate-200 bg-white text-sm text-slate-400">
+              No active map available
+            </div>
+          )}
+        </div>
+      </div>
 
+      {/* Middle Row: Commands + Current Task */}
+      <div className="mb-6 grid grid-cols-3 gap-6">
+        {/* Command Panel */}
+        <div className="rounded-xl border border-slate-200 bg-white p-5">
+          <h2 className="mb-4 text-sm font-semibold text-slate-900">Commands</h2>
+
+          <div className="space-y-3">
+            {/* Dispatch */}
+            <div className="grid grid-cols-2 gap-2">
+              <select
+                className="col-span-2 h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                onChange={(e) => setDispatchLocationId(Number(e.target.value))}
+                value={selectedDispatchLocationId ?? undefined}
+              >
+                {dispatchLocations.map((location) => (
+                  <option key={location.id} value={location.id}>{location.name}</option>
+                ))}
+              </select>
               <button
-                className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-2xl bg-red-600 px-4 text-sm font-semibold text-white transition hover:bg-red-700"
-                onClick={() => commandMutation.mutate('emergency-stop')}
+                className="col-span-2 flex h-10 items-center justify-center gap-2 rounded-lg bg-blue-600 text-sm font-medium text-white transition hover:bg-blue-700"
+                onClick={() => commandMutation.mutate('dispatch')}
                 type="button"
               >
-                <ShieldAlert className="h-4 w-4" />
-                Emergency stop
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path d="M3 12h18m-6-6 6 6-6 6" />
+                </svg>
+                Dispatch
+              </button>
+            </div>
+
+            {/* Pause / Resume */}
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                className="flex h-10 items-center justify-center gap-2 rounded-lg bg-amber-500 text-sm font-medium text-white transition hover:bg-amber-600"
+                onClick={() => commandMutation.mutate('pause')}
+                type="button"
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <rect height="16" width="4" x="6" y="4" /><rect height="16" width="4" x="14" y="4" />
+                </svg>
+                Pause
+              </button>
+              <button
+                className="flex h-10 items-center justify-center gap-2 rounded-lg bg-emerald-600 text-sm font-medium text-white transition hover:bg-emerald-700"
+                onClick={() => commandMutation.mutate('resume')}
+                type="button"
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <polygon points="5 3 19 12 5 21 5 3" />
+                </svg>
+                Resume
+              </button>
+            </div>
+
+            {/* Danger Zone */}
+            <div className="border-t border-slate-200 pt-3">
+              <div className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-400">Danger Zone</div>
+              <button
+                className="flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-red-600 text-sm font-bold text-white ring-2 ring-red-600/30 transition hover:bg-red-700"
+                onClick={() => setShowEstopModal(true)}
+                type="button"
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2" />
+                  <path d="M12 8v4" /><path d="M12 16h.01" />
+                </svg>
+                E-STOP
               </button>
             </div>
           </div>
-        </section>
+        </div>
 
-        <section className="space-y-6">
-          {currentMap && currentFloor ? <MapCanvas floor={currentFloor} map={currentMap} /> : null}
-
-          <div className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
-            <div className="rounded-[28px] border border-white/70 bg-white/88 p-5 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-semibold text-slate-950">Current task</div>
-                  <div className="mt-1 text-xs text-slate-500">Task state and delivery progress.</div>
-                </div>
-                {robotDetail.activeTask ? (
-                  <Link className="text-sm font-medium text-sky-700" to="/tasks">
-                    Open tasks
-                  </Link>
-                ) : null}
-              </div>
-
-              {robotDetail.activeTask ? (
-                <>
-                  <div className="mt-4 grid gap-3 md:grid-cols-2">
-                    <Row label="Task code" value={robotDetail.activeTask.taskCode} />
-                    <Row label="Status" value={robotDetail.activeTask.status} />
-                    <Row label="Priority" value={robotDetail.activeTask.priority} />
-                    <Row label="Type" value={robotDetail.activeTask.type} />
-                    <Row label="Pickup" value={robotDetail.activeTask.pickupLocationName} />
-                    <Row label="Dropoff" value={robotDetail.activeTask.dropoffLocationName} />
-                  </div>
-
-                  <div className="mt-6">
-                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-                      Progress
-                    </div>
-                    <div className="mt-4 space-y-4">
-                      {robotDetail.activeTask.timeline.map((step) => (
-                        <div className="flex items-start gap-3" key={step.key}>
-                          <div className="mt-0.5 flex flex-col items-center">
-                            <div
-                              className={`h-3 w-3 rounded-full ${
-                                step.state === 'done'
-                                  ? 'bg-emerald-500'
-                                  : step.state === 'current'
-                                    ? 'bg-sky-500'
-                                    : 'bg-slate-200'
-                              }`}
-                            />
-                            <div className="h-7 w-px bg-slate-200" />
-                          </div>
-                          <div>
-                            <div className="text-sm font-medium text-slate-900">{step.label}</div>
-                            <div className="mt-1 text-xs text-slate-500">
-                              {step.timestamp ? formatDateTime(step.timestamp) : 'Pending'}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="mt-4 rounded-3xl border border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500">
-                  No active task is assigned to this robot.
-                </div>
-              )}
-            </div>
-
-            <div className="rounded-[28px] border border-white/70 bg-white/88 p-5 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
-              <div className="text-sm font-semibold text-slate-950">Live state</div>
-              <div className="mt-1 text-xs text-slate-500">Telemetry and adapter heartbeat.</div>
-
-              <div className="mt-4 space-y-4">
-                <div className="rounded-3xl border border-slate-200 bg-slate-50 px-4 py-4">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-slate-500">Connection</span>
-                    <span className={robotDetail.state.online ? 'text-emerald-600' : 'text-slate-400'}>
-                      {robotDetail.state.online ? 'Online' : 'Offline'}
-                    </span>
-                  </div>
-                  <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
-                    <Radio className="h-4 w-4 text-sky-600" />
-                    Updated {formatRelativeTime(robotDetail.state.updatedAt)}
-                  </div>
-                </div>
-
-                <div className="rounded-3xl border border-slate-200 bg-slate-50 px-4 py-4">
-                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-                    Battery
-                  </div>
-                  <div className="mt-3 h-3 overflow-hidden rounded-full bg-slate-200">
-                    <div
-                      className="h-full rounded-full bg-emerald-500"
-                      style={{ width: `${robotDetail.state.batteryLevel}%` }}
-                    />
-                  </div>
-                  <div className="mt-2 text-sm font-medium text-slate-700">
-                    {robotDetail.state.batteryLevel}%
-                  </div>
-                </div>
-
-                <div className="rounded-3xl border border-slate-200 bg-slate-50 px-4 py-4 text-sm text-slate-600">
-                  Current pose is <strong>{robotDetail.pose.x.toFixed(1)}</strong>,{' '}
-                  <strong>{robotDetail.pose.y.toFixed(1)}</strong> on <strong>{robotDetail.pose.floorCode}</strong>.
-                </div>
-              </div>
-            </div>
+        {/* Current Task (2 cols) */}
+        <div className="col-span-2 rounded-xl border border-slate-200 bg-white p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-slate-900">Current Task</h2>
+            {activeTask ? (
+              <Link className="text-xs font-medium text-blue-600 hover:text-blue-700" to="/tasks">
+                View details →
+              </Link>
+            ) : null}
           </div>
 
-          <div className="rounded-[28px] border border-white/70 bg-white/88 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
-            <div className="flex flex-wrap gap-2 border-b border-slate-200 px-4 py-4">
-              {[
-                ['commands', 'Command history'],
-                ['events', 'Events'],
-                ['tasks', 'Task history'],
-                ['logs', 'Telemetry logs'],
-              ].map(([key, label]) => (
+          {activeTask ? (
+            <div className="flex gap-6">
+              <div className="flex-1">
+                <div className="grid grid-cols-2 gap-x-8 gap-y-0">
+                  <InfoRow label="Task ID" value={<span className="text-sm font-semibold text-blue-600">{activeTask.taskCode}</span>} />
+                  <InfoRow label="Status" value={<StatusBadge value={activeTask.status} />} />
+                  <InfoRow label="Type" value={activeTask.type} />
+                  <InfoRow label="Priority" value={<StatusBadge value={activeTask.priority} />} />
+                  <InfoRow label="Pickup" value={activeTask.pickupLocationName} />
+                  <InfoRow label="Dropoff" value={activeTask.dropoffLocationName} />
+                </div>
+              </div>
+
+              {/* Timeline */}
+              <div className="w-56 border-l border-slate-200 pl-6">
+                <div className="mb-3 text-xs font-medium text-slate-500">Progress</div>
+                <div className="space-y-3">
+                  {activeTask.timeline.map((step, i) => (
+                    <div className="flex items-start gap-3" key={step.key}>
+                      <div className="flex flex-col items-center">
+                        <div className={`h-3 w-3 rounded-full ring-4 ${
+                          step.state === 'done'
+                            ? 'bg-emerald-500 ring-emerald-100'
+                            : step.state === 'current'
+                              ? 'animate-pulse bg-blue-500 ring-blue-100'
+                              : 'bg-slate-200 ring-transparent'
+                        }`} />
+                        {i < activeTask.timeline.length - 1 ? (
+                          <div className={`mt-1 h-6 w-0.5 ${step.state === 'done' ? 'bg-emerald-300' : 'bg-slate-200'}`} />
+                        ) : null}
+                      </div>
+                      <div>
+                        <div className={`text-xs font-medium ${step.state === 'current' ? 'text-blue-600' : 'text-slate-700'}`}>
+                          {step.label}
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          {step.timestamp ? formatDateTime(step.timestamp) : step.state === 'current' ? 'In progress...' : 'Pending'}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500">
+              No active task is assigned to this robot.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* History Tabs */}
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+        <div className="flex border-b border-slate-200">
+          {([
+            ['commands', 'Command History'],
+            ['events', 'Events'],
+            ['tasks', 'Task History'],
+          ] as const).map(([key, label]) => (
+            <button
+              className={`px-5 py-3 text-sm font-medium transition ${
+                selectedTab === key
+                  ? 'border-b-2 border-blue-600 text-blue-600'
+                  : 'text-slate-500 hover:text-slate-700'
+              }`}
+              key={key}
+              onClick={() => setSelectedTab(key)}
+              type="button"
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="overflow-x-auto">
+          {selectedTab === 'commands' ? (
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-slate-100 bg-slate-50/50">
+                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Time</th>
+                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Command</th>
+                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Parameters</th>
+                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Status</th>
+                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Issued By</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-sm">
+                {commandHistory.map((cmd) => (
+                  <tr className="hover:bg-slate-50" key={cmd.id}>
+                    <td className="px-5 py-2.5 font-mono text-xs text-slate-500">{formatDateTime(cmd.createdAt)}</td>
+                    <td className="px-5 py-2.5">
+                      <StatusBadge value={cmd.commandType} />
+                    </td>
+                    <td className="px-5 py-2.5 text-slate-600">{cmd.parameters || '--'}</td>
+                    <td className="px-5 py-2.5">
+                      <StatusBadge value={cmd.status} />
+                    </td>
+                    <td className="px-5 py-2.5 text-slate-500">{cmd.issuedBy}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : null}
+
+          {selectedTab === 'events' ? (
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-slate-100 bg-slate-50/50">
+                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Time</th>
+                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Severity</th>
+                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Type</th>
+                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Message</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-sm">
+                {events.map((event) => (
+                  <tr className="hover:bg-slate-50" key={event.id}>
+                    <td className="px-5 py-2.5 font-mono text-xs text-slate-500">{formatDateTime(event.createdAt)}</td>
+                    <td className="px-5 py-2.5"><StatusBadge value={event.severity} /></td>
+                    <td className="px-5 py-2.5 text-slate-500">{event.type}</td>
+                    <td className="px-5 py-2.5 text-slate-700">{event.message}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : null}
+
+          {selectedTab === 'tasks' ? (
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-slate-100 bg-slate-50/50">
+                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Task</th>
+                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Status</th>
+                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Route</th>
+                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Created</th>
+                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Completed</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-sm">
+                {taskHistory.map((task) => (
+                  <tr className="hover:bg-slate-50" key={task.id}>
+                    <td className="px-5 py-2.5 font-medium text-blue-600">{task.taskCode}</td>
+                    <td className="px-5 py-2.5"><StatusBadge value={task.status} /></td>
+                    <td className="px-5 py-2.5 text-slate-600">
+                      {task.pickupLocationName} <ArrowRight className="mx-1 inline h-3 w-3" /> {task.dropoffLocationName}
+                    </td>
+                    <td className="px-5 py-2.5 text-slate-500">{formatDateTime(task.createdAt)}</td>
+                    <td className="px-5 py-2.5 text-slate-500">{task.completedAt ? formatDateTime(task.completedAt) : '--'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : null}
+        </div>
+      </div>
+
+      {/* E-STOP Modal */}
+      {showEstopModal ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={() => setShowEstopModal(false)}
+          />
+          <div className="relative mx-4 w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="text-center">
+              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-red-100">
+                <svg className="h-7 w-7 text-red-600" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2" />
+                  <path d="M12 8v4" /><path d="M12 16h.01" />
+                </svg>
+              </div>
+              <h3 className="mb-2 text-lg font-bold text-slate-900">Emergency Stop</h3>
+              <p className="mb-6 text-sm text-slate-500">
+                Are you sure you want to perform an{' '}
+                <strong className="text-red-600">emergency stop</strong> on{' '}
+                <strong>{robot.label}</strong>? This will immediately halt all movement and cancel the current task.
+              </p>
+              <div className="flex gap-3">
                 <button
-                  className={`rounded-full px-4 py-2 text-sm font-medium ${
-                    selectedTab === key
-                      ? 'bg-sky-600 text-white'
-                      : 'bg-slate-100 text-slate-600'
-                  }`}
-                  key={key}
-                  onClick={() => setSelectedTab(key as typeof selectedTab)}
+                  className="flex-1 h-11 rounded-lg border border-slate-300 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                  onClick={() => setShowEstopModal(false)}
                   type="button"
                 >
-                  {label}
+                  Cancel
                 </button>
-              ))}
-            </div>
-
-            <div className="overflow-x-auto px-2 pb-2 pt-1">
-              {selectedTab === 'commands' ? (
-                <table className="min-w-full text-left text-sm">
-                  <thead className="border-b border-slate-200 text-xs uppercase tracking-[0.18em] text-slate-500">
-                    <tr>
-                      <th className="px-4 py-3">Time</th>
-                      <th className="px-4 py-3">Command</th>
-                      <th className="px-4 py-3">Parameters</th>
-                      <th className="px-4 py-3">Status</th>
-                      <th className="px-4 py-3">Issued by</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {robotDetail.commandHistory.map((command) => (
-                      <tr key={command.id}>
-                        <td className="px-4 py-3 text-slate-500">{formatDateTime(command.createdAt)}</td>
-                        <td className="px-4 py-3 font-medium text-slate-800">{toTitle(command.commandType)}</td>
-                        <td className="px-4 py-3 text-slate-500">{command.parameters || '--'}</td>
-                        <td className="px-4 py-3">
-                          <StatusBadge value={command.status} />
-                        </td>
-                        <td className="px-4 py-3 text-slate-500">{command.issuedBy}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : null}
-
-              {selectedTab === 'events' ? (
-                <table className="min-w-full text-left text-sm">
-                  <thead className="border-b border-slate-200 text-xs uppercase tracking-[0.18em] text-slate-500">
-                    <tr>
-                      <th className="px-4 py-3">Time</th>
-                      <th className="px-4 py-3">Severity</th>
-                      <th className="px-4 py-3">Type</th>
-                      <th className="px-4 py-3">Message</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {robotDetail.events.map((event) => (
-                      <tr key={event.id}>
-                        <td className="px-4 py-3 text-slate-500">{formatDateTime(event.createdAt)}</td>
-                        <td className="px-4 py-3">
-                          <StatusBadge value={event.severity} />
-                        </td>
-                        <td className="px-4 py-3 text-slate-500">{event.type}</td>
-                        <td className="px-4 py-3 text-slate-700">{event.message}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : null}
-
-              {selectedTab === 'tasks' ? (
-                <table className="min-w-full text-left text-sm">
-                  <thead className="border-b border-slate-200 text-xs uppercase tracking-[0.18em] text-slate-500">
-                    <tr>
-                      <th className="px-4 py-3">Task</th>
-                      <th className="px-4 py-3">Status</th>
-                      <th className="px-4 py-3">Route</th>
-                      <th className="px-4 py-3">Created</th>
-                      <th className="px-4 py-3">Completed</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {robotDetail.taskHistory.map((task) => (
-                      <tr key={task.id}>
-                        <td className="px-4 py-3 font-medium text-sky-700">{task.taskCode}</td>
-                        <td className="px-4 py-3">
-                          <StatusBadge value={task.status} />
-                        </td>
-                        <td className="px-4 py-3 text-slate-600">
-                          {task.pickupLocationName} <ArrowRight className="mx-1 inline h-3 w-3" /> {task.dropoffLocationName}
-                        </td>
-                        <td className="px-4 py-3 text-slate-500">{formatDateTime(task.createdAt)}</td>
-                        <td className="px-4 py-3 text-slate-500">{formatDateTime(task.completedAt)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : null}
-
-              {selectedTab === 'logs' ? (
-                <table className="min-w-full text-left text-sm">
-                  <thead className="border-b border-slate-200 text-xs uppercase tracking-[0.18em] text-slate-500">
-                    <tr>
-                      <th className="px-4 py-3">Time</th>
-                      <th className="px-4 py-3">Status</th>
-                      <th className="px-4 py-3">Battery</th>
-                      <th className="px-4 py-3">Pose</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {robotDetail.logs.map((log) => (
-                      <tr key={log.id}>
-                        <td className="px-4 py-3 text-slate-500">{formatDateTime(log.recordedAt)}</td>
-                        <td className="px-4 py-3">
-                          <StatusBadge value={log.status} />
-                        </td>
-                        <td className="px-4 py-3 text-slate-600">{log.batteryLevel}%</td>
-                        <td className="px-4 py-3 text-slate-600">
-                          {log.poseX.toFixed(1)}, {log.poseY.toFixed(1)} / {log.yawDeg.toFixed(0)}°
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : null}
+                <button
+                  className="flex-1 h-11 rounded-lg bg-red-600 text-sm font-bold text-white transition hover:bg-red-700"
+                  onClick={() => {
+                    commandMutation.mutate('emergency-stop')
+                    setShowEstopModal(false)
+                  }}
+                  type="button"
+                >
+                  Confirm E-STOP
+                </button>
+              </div>
             </div>
           </div>
-        </section>
-      </div>
+        </div>
+      ) : null}
     </AppShell>
   )
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function InfoRow({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-      <span className="text-slate-500">{label}</span>
-      <span className="font-medium text-slate-800">{value}</span>
+    <div className="flex items-center justify-between border-b border-slate-100 py-2">
+      <span className="text-sm text-slate-500">{label}</span>
+      <span className="text-sm font-medium text-slate-700">{value}</span>
     </div>
   )
 }

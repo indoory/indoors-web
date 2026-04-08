@@ -24,49 +24,43 @@ export function LoginPage() {
         setErrorMessage(error.message)
         return
       }
-
       setErrorMessage('Unable to sign in right now.')
     },
   })
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-4 py-12">
+    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-12">
       <div className="w-full max-w-md">
+        {/* Logo */}
         <div className="mb-8 text-center">
-          <div className="mx-auto flex h-18 w-18 items-center justify-center rounded-[28px] bg-sky-500 text-white shadow-[0_22px_50px_rgba(14,165,233,0.35)]">
-            <Bot className="h-8 w-8" />
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-xl bg-blue-600">
+            <Bot className="h-7 w-7 text-white" />
           </div>
-          <div className="mt-6 text-xs font-semibold uppercase tracking-[0.28em] text-sky-700">Indoory</div>
-          <h1 className="mt-3 text-4xl font-semibold tracking-tight text-slate-950">Indoor robot control</h1>
-          <p className="mt-3 text-sm leading-6 text-slate-500">
-            Sign in to monitor fleet state, issue robot commands, and manage indoor delivery tasks.
-          </p>
+          <h1 className="mt-4 text-2xl font-bold text-slate-900">Indoory</h1>
+          <p className="mt-1 text-sm text-slate-500">Indoor robot control platform</p>
         </div>
 
-        <div className="rounded-[32px] border border-white/70 bg-white/88 p-8 shadow-[0_35px_90px_rgba(15,23,42,0.14)] backdrop-blur">
-          <div className="mb-6">
-            <div className="text-sm font-semibold text-slate-950">Operator login</div>
-            <div className="mt-1 text-sm text-slate-500">
-              Use the seeded admin account to enter the MVP control plane.
-            </div>
-          </div>
+        {/* Login Card */}
+        <div className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm">
+          <h2 className="mb-1 text-lg font-semibold text-slate-900">Operator Login</h2>
+          <p className="mb-6 text-sm text-slate-500">Sign in to access the fleet control panel.</p>
 
           <form
             className="space-y-4"
-            onSubmit={(event) => {
-              event.preventDefault()
+            onSubmit={(e) => {
+              e.preventDefault()
               setErrorMessage(null)
               loginMutation.mutate()
             }}
           >
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="email">
+              <label className="mb-1.5 block text-sm font-medium text-slate-700" htmlFor="email">
                 Email
               </label>
               <input
-                className="h-12 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm text-slate-900 outline-none ring-0 transition placeholder:text-slate-400 focus:border-sky-400 focus:bg-white"
+                className="h-11 w-full rounded-lg border border-slate-300 bg-white px-4 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
                 id="email"
-                onChange={(event) => setEmail(event.target.value)}
+                onChange={(e) => setEmail(e.target.value)}
                 placeholder="admin@indoory.io"
                 type="email"
                 value={email}
@@ -74,13 +68,13 @@ export function LoginPage() {
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="password">
+              <label className="mb-1.5 block text-sm font-medium text-slate-700" htmlFor="password">
                 Password
               </label>
               <input
-                className="h-12 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm text-slate-900 outline-none ring-0 transition placeholder:text-slate-400 focus:border-sky-400 focus:bg-white"
+                className="h-11 w-full rounded-lg border border-slate-300 bg-white px-4 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
                 id="password"
-                onChange={(event) => setPassword(event.target.value)}
+                onChange={(e) => setPassword(e.target.value)}
                 placeholder="password123"
                 type="password"
                 value={password}
@@ -88,13 +82,13 @@ export function LoginPage() {
             </div>
 
             {errorMessage ? (
-              <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {errorMessage}
               </div>
             ) : null}
 
             <button
-              className="mt-2 h-12 w-full rounded-2xl bg-sky-600 text-sm font-semibold text-white shadow-[0_18px_40px_rgba(14,165,233,0.28)] transition hover:bg-sky-700"
+              className="mt-2 h-11 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50"
               disabled={loginMutation.isPending}
               type="submit"
             >
@@ -102,7 +96,7 @@ export function LoginPage() {
             </button>
           </form>
 
-          <div className="mt-6 rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-xs leading-5 text-sky-800">
+          <div className="mt-5 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-xs leading-5 text-blue-800">
             Seeded account: <strong>admin@indoory.io</strong> / <strong>password123</strong>
           </div>
         </div>

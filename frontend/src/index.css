@@ -2,15 +2,6 @@
 @import "tailwindcss";
 
 :root {
-  --canvas: #f3f7fb;
-  --panel: rgba(255, 255, 255, 0.86);
-  --panel-border: rgba(148, 163, 184, 0.24);
-  --sidebar: #0f172a;
-  --sidebar-border: rgba(51, 65, 85, 0.7);
-  --brand: #0ea5e9;
-  --brand-strong: #0369a1;
-  --ink: #0f172a;
-  --muted: #64748b;
   font-family: 'Inter', sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -30,11 +21,8 @@ body,
 
 body {
   margin: 0;
-  background:
-    radial-gradient(circle at top left, rgba(14, 165, 233, 0.16), transparent 28%),
-    radial-gradient(circle at top right, rgba(59, 130, 246, 0.1), transparent 18%),
-    linear-gradient(180deg, #f8fbff 0%, var(--canvas) 52%, #edf3fa 100%);
-  color: var(--ink);
+  background-color: #f8fafc;
+  color: #0f172a;
 }
 
 a {

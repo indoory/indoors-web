@@ -1,11 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ChevronLeft } from 'lucide-react'
 import { startTransition, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { AppShell } from '../components/AppShell'
 import { LoadingView } from '../components/LoadingView'
 import { createTask, getCurrentMap } from '../lib/api'
 
-const priorities = ['LOW', 'NORMAL', 'HIGH', 'URGENT']
+const priorities = [
+  { value: 'LOW', label: 'Low', color: 'text-slate-600' },
+  { value: 'NORMAL', label: 'Normal', color: 'text-slate-700' },
+  { value: 'HIGH', label: 'High', color: 'text-amber-700' },
+  { value: 'URGENT', label: 'Urgent', color: 'text-red-600' },
+]
 
 export function TaskCreatePage() {
   const navigate = useNavigate()
@@ -27,14 +33,13 @@ export function TaskCreatePage() {
     selectedFloor?.locations.filter((location) => location.type !== 'CORRIDOR') ?? []
   const selectedPickupLocationId = pickupLocationId ?? selectableLocations[0]?.id ?? null
   const selectedDropoffLocationId =
-    dropoffLocationId ?? selectableLocations.find((location) => location.id !== selectedPickupLocationId)?.id ?? null
+    dropoffLocationId ??
+    selectableLocations.find((location) => location.id !== selectedPickupLocationId)?.id ??
+    null
 
   const createTaskMutation = useMutation({
     mutationFn: async () => {
-      if (!selectedPickupLocationId || !selectedDropoffLocationId) {
-        return
-      }
-
+      if (!selectedPickupLocationId || !selectedDropoffLocationId) return
       return createTask({
         pickupLocationId: selectedPickupLocationId,
         dropoffLocationId: selectedDropoffLocationId,
@@ -48,7 +53,6 @@ export function TaskCreatePage() {
         queryClient.invalidateQueries({ queryKey: ['events'] }),
         queryClient.invalidateQueries({ queryKey: ['map', 'current'] }),
       ])
-
       startTransition(() => {
         navigate(`/tasks?created=${task?.taskCode ?? 'TSK'}`)
       })
@@ -57,134 +61,142 @@ export function TaskCreatePage() {
 
   return (
     <AppShell
-      subtitle="Create a delivery task and let the backend auto-select the best available robot."
-      title="New Task"
+      subtitle="New delivery task"
+      title="Create Task"
     >
-      <div className="max-w-3xl rounded-[32px] border border-white/70 bg-white/88 p-6 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
-        {mapQuery.isLoading ? <LoadingView compact label="Loading active semantic map..." /> : null}
+      {/* Breadcrumb */}
+      <div className="mb-6 flex items-center gap-2">
+        <Link className="flex items-center gap-1 text-sm text-slate-500 transition hover:text-blue-600" to="/tasks">
+          <ChevronLeft className="h-4 w-4" />
+          Tasks
+        </Link>
+        <svg className="h-4 w-4 text-slate-300" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path d="m9 18 6-6-6-6" />
+        </svg>
+        <span className="text-sm font-medium text-slate-900">New Task</span>
+      </div>
 
-        <div className="mb-6">
-          <div className="text-lg font-semibold text-slate-950">Create delivery task</div>
-          <p className="mt-2 text-sm leading-6 text-slate-500">
-            Indoory will assign a robot automatically using online state, active task load,
-            battery threshold, floor match, and heartbeat freshness.
-          </p>
-        </div>
+      <div className="max-w-2xl">
+        <div className="rounded-xl border border-slate-200 bg-white p-6">
+          <h2 className="mb-6 text-lg font-semibold text-slate-900">Create New Task</h2>
 
-        <form
-          className="space-y-5"
-          onSubmit={(event) => {
-            event.preventDefault()
-            createTaskMutation.mutate()
-          }}
-        >
-          <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="floor">
-              Floor
-            </label>
-            <select
-              className="h-12 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm text-slate-700 outline-none focus:border-sky-400 focus:bg-white"
-              id="floor"
-              onChange={(event) => {
-                setFloorCode(event.target.value)
-                setPickupLocationId(null)
-                setDropoffLocationId(null)
-              }}
-              value={activeFloorCode}
-            >
-              {floors.map((floor) => (
-                <option key={floor.id} value={floor.code}>
-                  {floor.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          {mapQuery.isLoading ? <LoadingView compact label="Loading active map..." /> : null}
 
-          <div className="grid gap-4 md:grid-cols-2">
+          <form
+            className="space-y-5"
+            onSubmit={(e) => {
+              e.preventDefault()
+              createTaskMutation.mutate()
+            }}
+          >
+            {/* Floor */}
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="pickup">
-                Pickup location
+              <label className="mb-1.5 block text-sm font-medium text-slate-700" htmlFor="floor">
+                Floor
               </label>
               <select
-                className="h-12 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm text-slate-700 outline-none focus:border-sky-400 focus:bg-white"
-                id="pickup"
-                onChange={(event) => setPickupLocationId(Number(event.target.value))}
-                value={selectedPickupLocationId ?? ''}
+                className="h-11 w-full rounded-lg border border-slate-300 bg-white px-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                id="floor"
+                onChange={(e) => {
+                  setFloorCode(e.target.value)
+                  setPickupLocationId(null)
+                  setDropoffLocationId(null)
+                }}
+                value={activeFloorCode}
               >
-                {selectableLocations.map((location) => (
-                  <option key={location.id} value={location.id}>
-                    {location.name}
-                  </option>
+                {floors.map((floor) => (
+                  <option key={floor.id} value={floor.code}>{floor.name}</option>
                 ))}
               </select>
             </div>
 
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="dropoff">
-                Dropoff location
-              </label>
-              <select
-                className="h-12 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm text-slate-700 outline-none focus:border-sky-400 focus:bg-white"
-                id="dropoff"
-                onChange={(event) => setDropoffLocationId(Number(event.target.value))}
-                value={selectedDropoffLocationId ?? ''}
-              >
-                {selectableLocations.map((location) => (
-                  <option key={location.id} value={location.id}>
-                    {location.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <div className="mb-2 block text-sm font-medium text-slate-700">Priority</div>
-            <div className="flex flex-wrap gap-3">
-              {priorities.map((item) => (
-                <label
-                  className={`cursor-pointer rounded-2xl border px-4 py-3 text-sm font-medium transition ${
-                    priority === item
-                      ? 'border-sky-400 bg-sky-50 text-sky-700'
-                      : 'border-slate-200 bg-white text-slate-600'
-                  }`}
-                  key={item}
-                >
-                  <input
-                    checked={priority === item}
-                    className="sr-only"
-                    name="priority"
-                    onChange={() => setPriority(item)}
-                    type="radio"
-                  />
-                  {item}
+            {/* Pickup / Dropoff */}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-slate-700" htmlFor="pickup">
+                  Pickup Location
                 </label>
-              ))}
+                <select
+                  className="h-11 w-full rounded-lg border border-slate-300 bg-white px-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  id="pickup"
+                  onChange={(e) => setPickupLocationId(Number(e.target.value))}
+                  value={selectedPickupLocationId ?? ''}
+                >
+                  {selectableLocations.map((loc) => (
+                    <option key={loc.id} value={loc.id}>{loc.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-slate-700" htmlFor="dropoff">
+                  Dropoff Location
+                </label>
+                <select
+                  className="h-11 w-full rounded-lg border border-slate-300 bg-white px-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  id="dropoff"
+                  onChange={(e) => setDropoffLocationId(Number(e.target.value))}
+                  value={selectedDropoffLocationId ?? ''}
+                >
+                  {selectableLocations.map((loc) => (
+                    <option key={loc.id} value={loc.id}>{loc.name}</option>
+                  ))}
+                </select>
+              </div>
             </div>
-          </div>
 
-          <div className="rounded-[28px] border border-sky-100 bg-sky-50 px-5 py-4 text-sm text-sky-900">
-            Auto dispatch order: online only, no active task, no fault states, battery above 20%,
-            same map and floor first, then highest battery and freshest heartbeat.
-          </div>
+            {/* Priority */}
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-slate-700">Priority</label>
+              <div className="flex gap-3">
+                {priorities.map((p) => (
+                  <label
+                    className={`flex cursor-pointer items-center gap-2 rounded-lg border px-4 py-2 transition ${
+                      priority === p.value
+                        ? 'border-2 border-blue-500 bg-blue-50'
+                        : 'border-slate-200 hover:border-slate-300'
+                    }`}
+                    key={p.value}
+                  >
+                    <input
+                      checked={priority === p.value}
+                      className="h-4 w-4 text-blue-600"
+                      name="priority"
+                      onChange={() => setPriority(p.value)}
+                      type="radio"
+                      value={p.value}
+                    />
+                    <span className={`text-sm ${priority === p.value ? 'font-medium text-slate-700' : p.color}`}>
+                      {p.label}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
 
-          <div className="flex gap-3 pt-2">
-            <button
-              className="h-12 rounded-2xl bg-sky-600 px-6 text-sm font-semibold text-white transition hover:bg-sky-700"
-              disabled={createTaskMutation.isPending}
-              type="submit"
-            >
-              {createTaskMutation.isPending ? 'Creating task...' : 'Create task'}
-            </button>
-            <button
-              className="h-12 rounded-2xl border border-slate-200 px-6 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
-              onClick={() => navigate('/tasks')}
-              type="button"
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
+            {/* Auto-dispatch info */}
+            <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+              Auto-dispatch order: online only, no active task, no fault, battery above 20%, same floor first, then highest battery.
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center gap-3 border-t border-slate-200 pt-4">
+              <button
+                className="h-11 rounded-lg bg-blue-600 px-6 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50"
+                disabled={createTaskMutation.isPending}
+                type="submit"
+              >
+                {createTaskMutation.isPending ? 'Creating...' : 'Create Task'}
+              </button>
+              <button
+                className="h-11 rounded-lg border border-slate-300 px-6 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                onClick={() => navigate('/tasks')}
+                type="button"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
       </div>
     </AppShell>
   )

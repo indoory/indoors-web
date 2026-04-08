@@ -4,7 +4,7 @@ import { AppShell } from '../components/AppShell'
 import { LoadingView } from '../components/LoadingView'
 import { StatusBadge } from '../components/StatusBadge'
 import { getEvents, getRobots } from '../lib/api'
-import { formatDateTime } from '../lib/utils'
+import { formatDateTime, isToday } from '../lib/utils'
 
 export function EventsPage() {
   const eventsQuery = useQuery({
@@ -24,7 +24,8 @@ export function EventsPage() {
   const [type, setType] = useState('ALL')
   const deferredSearch = useDeferredValue(search)
 
-  const events = (eventsQuery.data ?? []).filter((event) => {
+  const allEvents = eventsQuery.data ?? []
+  const events = allEvents.filter((event) => {
     const searchValue = deferredSearch.toLowerCase()
     const matchesSearch =
       event.message.toLowerCase().includes(searchValue) ||
@@ -36,96 +37,159 @@ export function EventsPage() {
     return matchesSearch && matchesSeverity && matchesRobot && matchesType
   })
 
-  const eventTypes = Array.from(new Set((eventsQuery.data ?? []).map((event) => event.type)))
+  const todayEvents = allEvents.filter((e) => isToday(e.createdAt))
+  const infoCount = todayEvents.filter((e) => e.severity === 'INFO').length
+  const warnCount = todayEvents.filter((e) => e.severity === 'WARN').length
+  const errorCount = todayEvents.filter((e) => e.severity === 'ERROR').length
+  const criticalCount = todayEvents.filter((e) => e.severity === 'CRITICAL').length
+
+  const eventTypes = Array.from(new Set(allEvents.map((event) => event.type)))
   const robots = Array.from(new Set((robotsQuery.data ?? []).map((item) => item.label)))
 
   return (
     <AppShell
-      subtitle="Adapter events, robot warnings, and task lifecycle logs."
+      subtitle={`${allEvents.length} events total`}
       title="Events"
     >
-      <div className="rounded-[28px] border border-white/70 bg-white/88 p-4 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
-          <input
-            className="h-11 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-sky-400 focus:bg-white"
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search events..."
-            value={search}
-          />
-          <div className="grid gap-3 sm:grid-cols-3 xl:w-[560px]">
-            <select
-              className="h-11 rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-700 outline-none focus:border-sky-400"
-              onChange={(event) => setSeverity(event.target.value)}
-              value={severity}
-            >
-              <option value="ALL">All severity</option>
-              <option value="INFO">INFO</option>
-              <option value="WARN">WARN</option>
-              <option value="ERROR">ERROR</option>
-              <option value="CRITICAL">CRITICAL</option>
-            </select>
-            <select
-              className="h-11 rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-700 outline-none focus:border-sky-400"
-              onChange={(event) => setRobot(event.target.value)}
-              value={robot}
-            >
-              <option value="ALL">All robots</option>
-              {robots.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
-            <select
-              className="h-11 rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-700 outline-none focus:border-sky-400"
-              onChange={(event) => setType(event.target.value)}
-              value={type}
-            >
-              <option value="ALL">All types</option>
-              {eventTypes.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
+      {/* Severity Summary Cards */}
+      <div className="mb-6 grid grid-cols-4 gap-4">
+        <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-4">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50">
+            <span className="text-lg font-bold text-blue-600">{infoCount}</span>
+          </div>
+          <div>
+            <div className="text-xs text-slate-500">INFO</div>
+            <div className="text-sm font-medium text-slate-700">Today</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-white p-4">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-50">
+            <span className="text-lg font-bold text-amber-600">{warnCount}</span>
+          </div>
+          <div>
+            <div className="text-xs font-medium text-amber-600">WARN</div>
+            <div className="text-sm font-medium text-slate-700">Today</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 rounded-xl border border-red-200 bg-white p-4">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-50">
+            <span className="text-lg font-bold text-red-600">{errorCount}</span>
+          </div>
+          <div>
+            <div className="text-xs font-medium text-red-600">ERROR</div>
+            <div className="text-sm font-medium text-slate-700">Today</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 rounded-xl border border-red-300 bg-white p-4">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-100">
+            <span className="text-lg font-bold text-red-700">{criticalCount}</span>
+          </div>
+          <div>
+            <div className="text-xs font-medium text-red-700">CRITICAL</div>
+            <div className="text-sm font-medium text-slate-700">Today</div>
           </div>
         </div>
       </div>
 
-      <div className="mt-6 rounded-[28px] border border-white/70 bg-white/88 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
+      {/* Filters */}
+      <div className="mb-6 rounded-xl border border-slate-200 bg-white p-4">
+        <div className="flex items-center gap-3">
+          <div className="relative max-w-sm flex-1">
+            <svg className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" />
+            </svg>
+            <input
+              className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-4 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search events..."
+              value={search}
+            />
+          </div>
+          <select
+            className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            onChange={(e) => setSeverity(e.target.value)}
+            value={severity}
+          >
+            <option value="ALL">All Severity</option>
+            <option value="INFO">INFO</option>
+            <option value="WARN">WARN</option>
+            <option value="ERROR">ERROR</option>
+            <option value="CRITICAL">CRITICAL</option>
+          </select>
+          <select
+            className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            onChange={(e) => setRobot(e.target.value)}
+            value={robot}
+          >
+            <option value="ALL">All Robots</option>
+            {robots.map((r) => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
+          <select
+            className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            onChange={(e) => setType(e.target.value)}
+            value={type}
+          >
+            <option value="ALL">All Types</option>
+            {eventTypes.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Event Log Table */}
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
         {eventsQuery.isLoading ? (
           <div className="p-5">
             <LoadingView compact label="Loading event stream..." />
           </div>
         ) : null}
 
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-left text-sm">
-            <thead className="border-b border-slate-200 bg-slate-50/70 text-xs uppercase tracking-[0.18em] text-slate-500">
-              <tr>
-                <th className="px-5 py-4">Time</th>
-                <th className="px-5 py-4">Severity</th>
-                <th className="px-5 py-4">Robot</th>
-                <th className="px-5 py-4">Type</th>
-                <th className="px-5 py-4">Message</th>
-                <th className="px-5 py-4">Task</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {events.map((event) => (
-                <tr className="hover:bg-slate-50/80" key={event.id}>
-                  <td className="px-5 py-4 text-slate-500">{formatDateTime(event.createdAt)}</td>
-                  <td className="px-5 py-4">
-                    <StatusBadge value={event.severity} />
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-slate-200 bg-slate-50/50">
+              <th className="w-40 px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Time</th>
+              <th className="w-24 px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Severity</th>
+              <th className="w-28 px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Robot</th>
+              <th className="w-28 px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Type</th>
+              <th className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Message</th>
+              <th className="w-28 px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Task</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 text-sm">
+            {events.map((event) => {
+              const borderColor =
+                event.severity === 'CRITICAL' ? 'border-l-red-600' :
+                event.severity === 'ERROR' ? 'border-l-red-500' :
+                event.severity === 'WARN' ? 'border-l-amber-400' : 'border-l-blue-400'
+              const bgColor =
+                event.severity === 'CRITICAL' || event.severity === 'ERROR'
+                  ? 'bg-red-50/30'
+                  : event.severity === 'WARN'
+                    ? 'bg-amber-50/20'
+                    : ''
+              return (
+                <tr className={`border-l-4 ${borderColor} ${bgColor} hover:bg-opacity-50`} key={event.id}>
+                  <td className="px-5 py-3 font-mono text-xs text-slate-500">{formatDateTime(event.createdAt)}</td>
+                  <td className="px-5 py-3"><StatusBadge value={event.severity} /></td>
+                  <td className="px-5 py-3 font-medium text-slate-700">{event.robotLabel ?? 'System'}</td>
+                  <td className="px-5 py-3">
+                    <span className="inline-flex items-center rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+                      {event.type}
+                    </span>
                   </td>
-                  <td className="px-5 py-4 text-slate-700">{event.robotLabel ?? 'System'}</td>
-                  <td className="px-5 py-4 text-slate-500">{event.type}</td>
-                  <td className="px-5 py-4 text-slate-700">{event.message}</td>
-                  <td className="px-5 py-4 text-sky-700">{event.taskCode ?? '--'}</td>
+                  <td className="px-5 py-3 text-slate-700">{event.message}</td>
+                  <td className="px-5 py-3 font-medium text-blue-600">{event.taskCode ?? '--'}</td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              )
+            })}
+          </tbody>
+        </table>
+
+        <div className="flex items-center justify-between border-t border-slate-200 px-5 py-3">
+          <span className="text-sm text-slate-500">Showing {events.length} of {allEvents.length} events</span>
         </div>
       </div>
     </AppShell>

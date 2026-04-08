@@ -6,6 +6,7 @@ import { EventsPage } from './pages/EventsPage'
 import { LoginPage } from './pages/LoginPage'
 import { MapsPage } from './pages/MapsPage'
 import { RobotDetailPage } from './pages/RobotDetailPage'
+import { RobotCreatePage } from './pages/RobotCreatePage'
 import { RobotsPage } from './pages/RobotsPage'
 import { TaskCreatePage } from './pages/TaskCreatePage'
 import { TasksPage } from './pages/TasksPage'
@@ -64,6 +65,7 @@ export default function App() {
         <Route element={<Navigate replace to="/dashboard" />} path="/" />
         <Route element={<DashboardPage />} path="/dashboard" />
         <Route element={<RobotsPage />} path="/robots" />
+        <Route element={<RobotCreatePage />} path="/robots/new" />
         <Route element={<RobotDetailPage />} path="/robots/:robotId" />
         <Route element={<TasksPage />} path="/tasks" />
         <Route element={<TaskCreatePage />} path="/tasks/new" />

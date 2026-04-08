@@ -20,3 +20,5 @@ backend/.classpath
 backend/.project
 
 infra/postgres-data/
+
+backend/src/main/resources/application-*.yml

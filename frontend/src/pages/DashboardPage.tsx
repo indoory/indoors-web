@@ -40,14 +40,15 @@ export function DashboardPage() {
 
   return (
     <AppShell
-      subtitle="Live fleet overview, queue pressure, and recent control events."
+      subtitle="Fleet overview and real-time status"
       title="Dashboard"
     >
       {robotsQuery.isLoading || tasksQuery.isLoading || eventsQuery.isLoading ? (
-        <LoadingView compact label="Preparing live dashboard widgets..." />
+        <LoadingView compact label="Loading dashboard..." />
       ) : null}
 
-      <section className="grid gap-4 md:grid-cols-3 sm:grid-cols-2 xl:grid-cols-6">
+      {/* Summary Cards */}
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
         <SummaryCard
           detail={`${onlineRobots.length} online · ${robots.length - onlineRobots.length} offline`}
           icon={Bot}
@@ -56,21 +57,21 @@ export function DashboardPage() {
           value={robots.length}
         />
         <SummaryCard
-          detail={`${activeTasks.filter((task) => task.status === 'RUNNING').length} running`}
+          detail={`${activeTasks.filter((t) => t.status === 'RUNNING').length} running`}
           icon={Gauge}
           label="Active Tasks"
           tone="emerald"
           value={activeTasks.length}
         />
         <SummaryCard
-          detail={errorRobots.map((robot) => robot.label).join(', ') || 'No faults'}
+          detail={errorRobots.map((r) => r.label).join(', ') || 'No faults'}
           icon={ShieldAlert}
           label="Errors"
           tone={errorRobots.length ? 'red' : 'slate'}
           value={errorRobots.length}
         />
         <SummaryCard
-          detail={lowBatteryRobots.map((robot) => `${robot.label} ${robot.batteryLevel}%`).join(', ') || 'Healthy fleet'}
+          detail={lowBatteryRobots.map((r) => `${r.label} (${r.batteryLevel}%)`).join(', ') || 'Healthy fleet'}
           icon={AlertTriangle}
           label="Low Battery"
           tone={lowBatteryRobots.length ? 'amber' : 'slate'}
@@ -84,136 +85,146 @@ export function DashboardPage() {
           value={queuedTasks.length}
         />
         <SummaryCard
-          detail="Completed since local midnight"
+          detail="Completed since midnight"
           icon={CheckCheck}
-          label="Completed Today"
+          label="Delivered Today"
           tone="slate"
           value={completedToday}
         />
-      </section>
+      </div>
 
-      <section className="mt-6 grid gap-6 xl:grid-cols-[1.7fr_1fr]">
-        <div className="rounded-[28px] border border-white/70 bg-white/88 p-5 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-950">Robot fleet status</h2>
-              <p className="mt-1 text-xs text-slate-500">Realtime robot status and active task pairing.</p>
-            </div>
-            <Link className="text-sm font-medium text-sky-700" to="/robots">
-              View all
+      {/* Robot Fleet + Recent Events */}
+      <div className="mt-6 grid grid-cols-3 gap-6">
+        {/* Robot Fleet Status */}
+        <div className="col-span-2 rounded-xl border border-slate-200 bg-white">
+          <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+            <h2 className="text-sm font-semibold text-slate-900">Robot Fleet Status</h2>
+            <Link className="text-xs font-medium text-blue-600 hover:text-blue-700" to="/robots">
+              View all →
             </Link>
           </div>
-
-          <div className="mt-4 grid gap-3 lg:grid-cols-3">
-            {robots.slice(0, 6).map((robot) => (
-              <Link
-                className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4 transition hover:border-sky-300 hover:bg-white"
-                key={robot.id}
-                to={`/robots/${robot.id}`}
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-950">{robot.label}</div>
-                    <div className="mt-1 text-xs text-slate-400">{robot.robotCode}</div>
+          <div className="p-4">
+            <div className="grid grid-cols-3 gap-3">
+              {robots.slice(0, 6).map((robot) => (
+                <Link
+                  className={`block cursor-pointer rounded-lg border p-4 transition hover:shadow-sm ${
+                    robot.status === 'ERROR' || robot.status === 'EMERGENCY_STOP'
+                      ? 'border-red-200 bg-red-50/50 hover:border-red-300'
+                      : robot.batteryLevel < 20
+                        ? 'border-amber-200 bg-amber-50/30 hover:border-amber-300'
+                        : 'border-slate-200 hover:border-blue-300'
+                  }`}
+                  key={robot.id}
+                  to={`/robots/${robot.id}`}
+                >
+                  <div className="mb-3 flex items-center justify-between">
+                    <span className="text-sm font-semibold text-slate-900">{robot.label}</span>
+                    <StatusBadge value={robot.status} />
                   </div>
-                  <StatusBadge value={robot.status} />
-                </div>
-                <div className="mt-4 space-y-2 text-xs text-slate-500">
-                  <div className="flex items-center justify-between">
-                    <span>Battery</span>
-                    <span className="font-medium text-slate-700">{robot.batteryLevel}%</span>
+                  <div className="space-y-2 text-xs text-slate-500">
+                    <div className="flex items-center justify-between">
+                      <span>Battery</span>
+                      <div className="flex items-center gap-1.5">
+                        <div className="h-1.5 w-16 rounded-full bg-slate-100">
+                          <div
+                            className={`h-1.5 rounded-full ${robot.batteryLevel < 20 ? 'bg-red-500' : 'bg-emerald-500'}`}
+                            style={{ width: `${robot.batteryLevel}%` }}
+                          />
+                        </div>
+                        <span className={`font-medium ${robot.batteryLevel < 20 ? 'text-red-600' : 'text-slate-700'}`}>
+                          {robot.batteryLevel}%
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Floor</span>
+                      <span className="font-medium text-slate-700">{robot.floorCode}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Task</span>
+                      <span className={robot.currentTaskCode ? 'font-medium text-blue-600' : 'text-slate-400'}>
+                        {robot.currentTaskCode ?? 'None'}
+                      </span>
+                    </div>
                   </div>
-                  <div className="h-2 overflow-hidden rounded-full bg-slate-200">
-                    <div
-                      className="h-full rounded-full bg-emerald-500"
-                      style={{ width: `${robot.batteryLevel}%` }}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Floor</span>
-                    <span className="font-medium text-slate-700">{robot.floorCode}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Current Task</span>
-                    <span className="font-medium text-slate-700">{robot.currentTaskCode ?? '--'}</span>
-                  </div>
-                </div>
-              </Link>
-            ))}
+                </Link>
+              ))}
+            </div>
           </div>
         </div>
 
-        <div className="rounded-[28px] border border-white/70 bg-white/88 p-5 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-950">Recent events</h2>
-              <p className="mt-1 text-xs text-slate-500">The latest fleet, task, and adapter events.</p>
-            </div>
-            <Link className="text-sm font-medium text-sky-700" to="/events">
-              View all
+        {/* Recent Events */}
+        <div className="rounded-xl border border-slate-200 bg-white">
+          <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+            <h2 className="text-sm font-semibold text-slate-900">Recent Events</h2>
+            <Link className="text-xs font-medium text-blue-600 hover:text-blue-700" to="/events">
+              View all →
             </Link>
           </div>
-
-          <div className="mt-4 space-y-3">
-            {events.slice(0, 6).map((event) => (
-              <div
-                className="rounded-3xl border border-slate-200 bg-slate-50/70 px-4 py-3"
-                key={event.id}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <StatusBadge value={event.severity} />
-                  <span className="text-xs text-slate-400">{formatRelativeTime(event.createdAt)}</span>
+          <div className="divide-y divide-slate-100">
+            {events.slice(0, 6).map((event) => {
+              const borderColor =
+                event.severity === 'ERROR' || event.severity === 'CRITICAL'
+                  ? 'border-l-red-500'
+                  : event.severity === 'WARN'
+                    ? 'border-l-amber-400'
+                    : 'border-l-blue-400'
+              const bgColor =
+                event.severity === 'ERROR' || event.severity === 'CRITICAL'
+                  ? 'bg-red-50/50'
+                  : ''
+              return (
+                <div className={`border-l-4 px-5 py-3 ${borderColor} ${bgColor}`} key={event.id}>
+                  <div className="mb-1 flex items-center gap-2">
+                    <StatusBadge value={event.severity} />
+                    <span className="text-xs text-slate-400">{formatRelativeTime(event.createdAt)}</span>
+                  </div>
+                  <p className="text-sm text-slate-700">{event.message}</p>
+                  <p className="mt-0.5 text-xs text-slate-400">
+                    {event.robotLabel ?? 'System'} · {event.type}
+                  </p>
                 </div>
-                <div className="mt-3 text-sm font-medium text-slate-900">{event.message}</div>
-                <div className="mt-2 text-xs text-slate-500">
-                  {(event.robotLabel ?? 'System') + ' · ' + event.type}
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </div>
-      </section>
+      </div>
 
-      <section className="mt-6 rounded-[28px] border border-white/70 bg-white/88 p-5 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-950">Recent tasks</h2>
-            <p className="mt-1 text-xs text-slate-500">Auto-dispatched and queued work across the building.</p>
-          </div>
-          <Link className="text-sm font-medium text-sky-700" to="/tasks">
-            Open task list
+      {/* Recent Tasks */}
+      <div className="mt-6 rounded-xl border border-slate-200 bg-white">
+        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+          <h2 className="text-sm font-semibold text-slate-900">Recent Tasks</h2>
+          <Link className="text-xs font-medium text-blue-600 hover:text-blue-700" to="/tasks">
+            View all →
           </Link>
         </div>
-
-        <div className="mt-4 overflow-x-auto">
-          <table className="min-w-full text-left text-sm">
-            <thead className="border-b border-slate-200 text-xs uppercase tracking-[0.18em] text-slate-500">
-              <tr>
-                <th className="px-4 py-3">Task</th>
-                <th className="px-4 py-3">Robot</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Route</th>
-                <th className="px-4 py-3">Created</th>
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-slate-100 bg-slate-50/50">
+              <th className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Task ID</th>
+              <th className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Robot</th>
+              <th className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Status</th>
+              <th className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Route</th>
+              <th className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">Created</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {tasks.slice(0, 5).map((task) => (
+              <tr className="hover:bg-slate-50" key={task.id}>
+                <td className="px-5 py-3 text-sm font-semibold text-blue-600">{task.taskCode}</td>
+                <td className="px-5 py-3 text-sm text-slate-700">{task.assignedRobotLabel ?? 'Queued'}</td>
+                <td className="px-5 py-3">
+                  <StatusBadge value={task.status} />
+                </td>
+                <td className="px-5 py-3 text-sm text-slate-600">
+                  {task.pickupLocationName} → {task.dropoffLocationName}
+                </td>
+                <td className="px-5 py-3 text-sm text-slate-400">{formatDateTime(task.createdAt)}</td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {tasks.slice(0, 6).map((task) => (
-                <tr className="hover:bg-slate-50/80" key={task.id}>
-                  <td className="px-4 py-3 font-semibold text-sky-700">{task.taskCode}</td>
-                  <td className="px-4 py-3 text-slate-700">{task.assignedRobotLabel ?? 'Queued'}</td>
-                  <td className="px-4 py-3">
-                    <StatusBadge value={task.status} />
-                  </td>
-                  <td className="px-4 py-3 text-slate-600">
-                    {task.pickupLocationName} → {task.dropoffLocationName}
-                  </td>
-                  <td className="px-4 py-3 text-slate-500">{formatDateTime(task.createdAt)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </AppShell>
   )
 }

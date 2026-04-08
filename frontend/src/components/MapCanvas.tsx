@@ -1,19 +1,5 @@
 import type { CurrentMapResponse, FloorPlan } from '../types/api'
 
-function locationFill(type: string) {
-  switch (type) {
-    case 'LOBBY':
-    case 'RECEPTION':
-      return '#1d4ed8'
-    case 'ELEVATOR':
-      return '#7c3aed'
-    case 'STORAGE':
-      return '#0f766e'
-    default:
-      return '#1e293b'
-  }
-}
-
 export function MapCanvas({
   floor,
   map,
@@ -23,128 +9,56 @@ export function MapCanvas({
 }) {
   const floorRobots = map.robots.filter((robot) => robot.floorCode === floor.code)
   const floorTasks = map.activeTasks.filter((task) => task.floorCode === floor.code)
-  const locationById = new Map(floor.locations.map((location) => [location.id, location]))
 
   return (
-    <div className="overflow-hidden rounded-[28px] border border-slate-800 bg-slate-950 shadow-[0_28px_70px_rgba(15,23,42,0.18)]">
-      <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900/95 px-4 py-3">
-        <div>
-          <div className="text-sm font-semibold text-white">{floor.name}</div>
-          <div className="mt-1 text-xs text-slate-400">
-            {map.name} · {map.version} · {map.scaleMetersPerPixel} m/px
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/50 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-slate-900">{floor.name}</h2>
+          <span className="text-xs text-slate-400">{map.name}</span>
+        </div>
+        <span className="text-xs text-slate-500">
+          {floorRobots.length} robots · {floorTasks.length} active tasks
+        </span>
+      </div>
+
+      {floor.mapImageUrl ? (
+        <div className="relative bg-slate-900">
+          <img
+            alt={`Floor map: ${floor.name}`}
+            className="h-[480px] w-full object-contain"
+            src={floor.mapImageUrl}
+          />
+          {/* Robot overlays — positioned using percentage of rendered image */}
+          <div className="absolute bottom-3 right-3 flex items-center gap-3 rounded-lg bg-slate-800/90 px-3 py-2 text-[10px] text-slate-300 backdrop-blur">
+            <div className="flex items-center gap-1">
+              <span className="inline-block h-2 w-2 rounded-full bg-blue-500" />
+              Robot
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
+              Goal
+            </div>
+            <div className="flex items-center gap-1 border-t-2 border-dashed border-blue-400 w-4" />
+            Path
           </div>
         </div>
-        <div className="text-xs text-slate-400">
-          {floorRobots.length} robots · {floorTasks.length} active tasks
+      ) : (
+        <div className="relative h-80 bg-slate-900">
+          {/* Grid overlay */}
+          <svg className="absolute inset-0 h-full w-full opacity-[0.07]" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <pattern height="40" id={`grid-${floor.id}`} patternUnits="userSpaceOnUse" width="40">
+                <path d="M 40 0 L 0 0 0 40" fill="none" stroke="white" strokeWidth="0.5" />
+              </pattern>
+            </defs>
+            <rect fill={`url(#grid-${floor.id})`} height="100%" width="100%" />
+          </svg>
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-500">
+            No map image uploaded for this floor
+          </div>
         </div>
-      </div>
-
-      <div className="relative">
-        <svg
-          className="h-[520px] w-full bg-slate-950"
-          preserveAspectRatio="xMidYMid meet"
-          viewBox={floor.viewBox}
-        >
-          <defs>
-            <pattern height="40" id={`grid-${floor.id}`} patternUnits="userSpaceOnUse" width="40">
-              <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
-            </pattern>
-          </defs>
-
-          <rect fill={`url(#grid-${floor.id})`} height={floor.height} width={floor.width} x="0" y="0" />
-
-          {floor.locations.map((location) => (
-            <g key={location.id}>
-              <rect
-                fill={locationFill(location.type)}
-                height={location.height}
-                opacity={0.78}
-                rx="10"
-                stroke="rgba(148, 163, 184, 0.45)"
-                strokeWidth="2"
-                width={location.width}
-                x={location.x}
-                y={location.y}
-              />
-              <text
-                fill="rgba(226,232,240,0.92)"
-                fontFamily="Inter, sans-serif"
-                fontSize="12"
-                fontWeight="600"
-                textAnchor="middle"
-                x={location.x + location.width / 2}
-                y={location.y + location.height / 2}
-              >
-                {location.name}
-              </text>
-            </g>
-          ))}
-
-          {floorTasks.map((task) => {
-            const robot = floorRobots.find((candidate) => candidate.robotId === task.assignedRobotId)
-            const destination = locationById.get(task.dropoffLocationId)
-
-            if (!robot || !destination) {
-              return null
-            }
-
-            return (
-              <g key={task.id}>
-                <line
-                  opacity="0.65"
-                  stroke="#60a5fa"
-                  strokeDasharray="10 6"
-                  strokeWidth="3"
-                  x1={robot.x}
-                  x2={destination.x + destination.width / 2}
-                  y1={robot.y}
-                  y2={destination.y + destination.height / 2}
-                />
-                <circle
-                  cx={destination.x + destination.width / 2}
-                  cy={destination.y + destination.height / 2}
-                  fill="none"
-                  r="12"
-                  stroke="#34d399"
-                  strokeDasharray="4 4"
-                  strokeWidth="2"
-                />
-              </g>
-            )
-          })}
-
-          {floorRobots.map((robot) => (
-            <g key={robot.robotId}>
-              <circle cx={robot.x} cy={robot.y} fill="rgba(59,130,246,0.24)" r="18" />
-              <circle cx={robot.x} cy={robot.y} fill="#3b82f6" r="11" stroke="#93c5fd" strokeWidth="2" />
-              <circle cx={robot.x} cy={robot.y} fill="white" r="3" />
-              <g transform={`translate(${robot.x} ${robot.y}) rotate(${robot.yawDeg})`}>
-                <polygon fill="#bfdbfe" points="0,-16 -5,-8 5,-8" />
-              </g>
-              <rect
-                fill="#1d4ed8"
-                height="22"
-                opacity="0.96"
-                rx="6"
-                width="88"
-                x={robot.x - 44}
-                y={robot.y + 16}
-              />
-              <text
-                fill="white"
-                fontFamily="Inter, sans-serif"
-                fontSize="10"
-                fontWeight="700"
-                textAnchor="middle"
-                x={robot.x}
-                y={robot.y + 30}
-              >
-                {robot.label}
-              </text>
-            </g>
-          ))}
-        </svg>
-      </div>
+      )}
     </div>
   )
 }

@@ -118,38 +118,24 @@ export interface EventLog {
   taskCode: string | null
 }
 
-export interface RobotStateSnapshot {
-  id: number
-  recordedAt: string
-  status: RobotStatus
-  batteryLevel: number
-  poseX: number
-  poseY: number
-  yawDeg: number
-}
-
+/** Matches backend LocationResponse: id, name, floorId, type, x, y */
 export interface LocationReference {
   id: number
-  code: string
   name: string
   floorId: number
-  floorCode: string
-  floorName: string
   type: string
   x: number
   y: number
-  width: number
-  height: number
 }
 
+/** Matches backend FloorResponse */
 export interface FloorPlan {
   id: number
   code: string
   name: string
   orderIndex: number
-  width: number
-  height: number
-  viewBox: string
+  mapImageUrl: string | null
+  mapPgmUrl?: string | null
   locations: LocationReference[]
 }
 
@@ -157,8 +143,6 @@ export interface MapMetadata {
   id: number
   code: string
   name: string
-  version: string
-  scaleMetersPerPixel: number
   active: boolean
 }
 
@@ -187,6 +171,7 @@ export interface MapTask {
   progressLabel: string
 }
 
+/** Matches backend CurrentMapResponse */
 export interface CurrentMapResponse extends MapMetadata {
   floors: FloorPlan[]
   robots: MapRobot[]
@@ -201,7 +186,6 @@ export interface RobotDetailResponse {
   commandHistory: CommandLog[]
   taskHistory: TaskSummary[]
   events: EventLog[]
-  logs: RobotStateSnapshot[]
 }
 
 export interface CreateTaskRequest {
@@ -217,3 +201,44 @@ export interface DispatchCommandRequest {
 export interface RobotLabelRequest {
   label: string
 }
+
+export interface CreateRobotRequest {
+  robotCode: string
+  label: string
+  mapId: number
+  floorId: number
+  poseX: number
+  poseY: number
+}
+
+export interface InitialPoseRequest {
+  x: number
+  y: number
+  yaw: number
+}
+
+export interface SlamSaveRequest {
+  mapName: string
+}
+
+export interface SlamExploreStatus {
+  exploreStatus: string
+  [key: string]: unknown
+}
+
+export interface SetNav2YamlUrlRequest {
+  nav2YamlUrl: string
+}
+
+export interface CreateMapRequest {
+  code: string
+  name: string
+}
+
+export interface CreateFloorRequest {
+  mapId: number
+  code: string
+  name: string
+  orderIndex?: number
+}
+
