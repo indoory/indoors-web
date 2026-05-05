@@ -29,7 +29,9 @@ public final class ApiDtos {
   public record TelemetryRequest(
       String status, boolean online, Double x, Double y, double yawDeg) {}
 
-  public record SlamSaveRequest(String mapName) {}
+  public record SlamSaveRequest(Long mapId, String mapName) {}
+
+  public record FloorSetRequest(Long floorId) {}
 
   public record InitialPoseRequest(double x, double y, double yaw) {}
 

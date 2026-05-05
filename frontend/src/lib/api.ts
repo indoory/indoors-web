@@ -235,6 +235,21 @@ export function stopSlam(robotId: number | string) {
   return request<void>(`/api/robots/${robotId}/slam/stop`, { method: 'POST' })
 }
 
+// ── 멀티세션 SLAM (RTAB-Map) ────────────────────────────────────────────
+export function setRobotFloor(robotId: number | string, floorId: number) {
+  return request<{ ok: boolean; reason?: string; floorCode?: string; blobBytes?: number }>(
+    `/api/robots/${robotId}/floor/set`,
+    { method: 'POST', body: JSON.stringify({ floorId }) },
+  )
+}
+
+export function relocalizeRobot(robotId: number | string) {
+  return request<{ converged: boolean; exit_code?: number; error?: string }>(
+    `/api/robots/${robotId}/relocalize`,
+    { method: 'POST' },
+  )
+}
+
 // ── Maps ─────────────────────────────────────────────────────────────────────
 
 export function setMapNav2YamlUrl(mapId: number | string, payload: SetNav2YamlUrlRequest) {

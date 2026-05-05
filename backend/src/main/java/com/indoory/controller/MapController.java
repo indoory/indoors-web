@@ -3,9 +3,12 @@ package com.indoory.controller;
 import com.indoory.service.MapService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import java.io.IOException;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -16,6 +19,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.http.HttpStatus;
 
 @RestController
 @RequestMapping("/api")
@@ -105,5 +110,34 @@ public class MapController {
   @DeleteMapping("/maps/{mapId}")
   public void deleteMap(@PathVariable Long mapId) {
     mapService.deleteMap(mapId);
+  }
+
+  // ── RTAB-Map .db blob (멀티세션 SLAM 영속화) ─────────────────────────
+  @Operation(
+      summary = "Upload RTAB-Map DB",
+      description = "ros_adapter 가 백업한 RTAB-Map .db 파일을 multipart 로 업로드.")
+  @PostMapping(
+      value = "/maps/{mapId}/rtabmap-db",
+      consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+  public void uploadRtabmapDb(
+      @PathVariable Long mapId, @RequestPart("file") MultipartFile file) {
+    try {
+      mapService.saveRtabmapDb(mapId, file.getBytes());
+    } catch (IOException e) {
+      throw new ResponseStatusException(
+          HttpStatus.INTERNAL_SERVER_ERROR, "failed to read uploaded blob", e);
+    }
+  }
+
+  @Operation(
+      summary = "Download RTAB-Map DB",
+      description = "지정 맵의 RTAB-Map .db blob 다운로드 (octet-stream).")
+  @GetMapping("/maps/{mapId}/rtabmap-db")
+  public ResponseEntity<byte[]> downloadRtabmapDb(@PathVariable Long mapId) {
+    byte[] blob = mapService.getRtabmapDb(mapId);
+    return ResponseEntity.ok()
+        .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"map" + mapId + ".db\"")
+        .contentType(MediaType.APPLICATION_OCTET_STREAM)
+        .body(blob);
   }
 }

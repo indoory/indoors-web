@@ -115,6 +115,24 @@ public class MapService {
     return viewAssemblerService.toMapMetadata(map);
   }
 
+  // ── RTAB-Map .db blob ─────────────────────────────────────────────────
+  @Transactional
+  public void saveRtabmapDb(Long mapId, byte[] blob) {
+    IndoorMap map = findMap(mapId);
+    map.replaceRtabmapDb(blob);
+    mapRepository.save(map);
+  }
+
+  @Transactional(readOnly = true)
+  public byte[] getRtabmapDb(Long mapId) {
+    IndoorMap map = findMap(mapId);
+    byte[] blob = map.getRtabmapDb();
+    if (blob == null) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "no rtabmap_db on map " + mapId);
+    }
+    return blob;
+  }
+
   @Transactional
   public ApiDtos.FloorResponse uploadFloorMapFile(Long floorId, MultipartFile file) {
     Floor floor = findFloor(floorId);

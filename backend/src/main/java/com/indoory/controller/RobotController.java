@@ -1,6 +1,10 @@
 package com.indoory.controller;
 
 import com.indoory.config.SessionOperator;
+import com.indoory.entity.Floor;
+import com.indoory.entity.IndoorMap;
+import com.indoory.repository.FloorRepository;
+import com.indoory.repository.MapRepository;
 import com.indoory.service.RobotAdapterClient;
 import com.indoory.service.RobotService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -28,6 +32,8 @@ public class RobotController {
 
   private final RobotService robotService;
   private final RobotAdapterClient adapterClient;
+  private final FloorRepository floorRepository;
+  private final MapRepository mapRepository;
 
   @Operation(summary = "Create robot", description = "Creates a new robot.")
   @PostMapping
@@ -166,16 +172,49 @@ public class RobotController {
 
   @Operation(
       summary = "Save SLAM map",
-      description = "Saves the current SLAM map on the adapter with the given map name.")
+      description =
+          "어댑터가 RTAB-Map .db 백업 후 Spring 의 /api/maps/{mapId}/rtabmap-db 로 blob 푸시.")
   @PostMapping("/{robotId}/slam/save")
   public void saveSlam(@PathVariable Long robotId, @RequestBody ApiDtos.SlamSaveRequest request) {
-    adapterClient.saveSlam(request.mapName());
+    adapterClient.saveSlam(request.mapId(), request.mapName());
   }
 
   @Operation(summary = "Stop SLAM", description = "Stops the SLAM process on the adapter.")
   @PostMapping("/{robotId}/slam/stop")
   public void stopSlam(@PathVariable Long robotId) {
     adapterClient.stopSlam();
+  }
+
+  // ── 멀티세션 SLAM 확장 ───────────────────────────────────────────────
+  @Operation(
+      summary = "Set robot floor (load .db)",
+      description =
+          "지정 floorId 의 부모 맵에 저장된 RTAB-Map .db blob 을 어댑터로 전송해 rtabmap reload.")
+  @PostMapping("/{robotId}/floor/set")
+  public Map<String, Object> setFloor(
+      @PathVariable Long robotId, @RequestBody ApiDtos.FloorSetRequest request) {
+    Floor floor =
+        floorRepository
+            .findById(request.floorId())
+            .orElseThrow(() -> new IllegalArgumentException("floor not found"));
+    IndoorMap map =
+        mapRepository
+            .findById(floor.getMapId())
+            .orElseThrow(() -> new IllegalArgumentException("map not found"));
+    byte[] blob = map.getRtabmapDb();
+    if (blob == null || blob.length == 0) {
+      return Map.of("ok", false, "reason", "no rtabmap_db saved on map " + map.getId());
+    }
+    adapterClient.setFloor(floor.getCode(), blob);
+    return Map.of("ok", true, "floorCode", floor.getCode(), "blobBytes", blob.length);
+  }
+
+  @Operation(
+      summary = "Spin & relocalize",
+      description = "로봇이 한 바퀴 회전하면서 RTAB-Map BoW 매칭으로 맵 위 자기 위치 추정.")
+  @PostMapping("/{robotId}/relocalize")
+  public Map<String, Object> relocalize(@PathVariable Long robotId) {
+    return adapterClient.relocalize();
   }
 
   @Operation(summary = "Delete robot", description = "Deletes a robot.")

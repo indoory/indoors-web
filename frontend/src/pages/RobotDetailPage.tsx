@@ -12,7 +12,11 @@ import {
   getCurrentMap,
   getRobot,
   pauseRobot,
+  relocalizeRobot,
   resumeRobot,
+  saveSlamMap,
+  setRobotFloor,
+  startSlamExplore,
 } from '../lib/api'
 import { formatDateTime, formatRelativeTime } from '../lib/utils'
 
@@ -22,6 +26,8 @@ export function RobotDetailPage() {
   const [selectedTab, setSelectedTab] = useState<'commands' | 'events' | 'tasks'>('commands')
   const [dispatchLocationId, setDispatchLocationId] = useState<number | null>(null)
   const [showEstopModal, setShowEstopModal] = useState(false)
+  const [selectedFloorId, setSelectedFloorId] = useState<number | null>(null)
+  const [slamMessage, setSlamMessage] = useState<string | null>(null)
 
   const robotQuery = useQuery({
     queryKey: ['robot', robotId],
@@ -223,6 +229,71 @@ export function RobotDetailPage() {
                 </svg>
                 Resume
               </button>
+            </div>
+
+            {/* 멀티세션 SLAM */}
+            <div className="border-t border-slate-200 pt-3">
+              <div className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-400">
+                Multi-session SLAM
+              </div>
+              <div className="space-y-2">
+                <select
+                  className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  onChange={(e) => setSelectedFloorId(Number(e.target.value))}
+                  value={selectedFloorId ?? currentMap?.floors[0]?.id ?? undefined}
+                >
+                  {currentMap?.floors.map((floor) => (
+                    <option key={floor.id} value={floor.id}>
+                      {floor.name}
+                    </option>
+                  ))}
+                </select>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    className="flex h-9 items-center justify-center rounded-lg bg-indigo-600 text-xs font-medium text-white transition hover:bg-indigo-700"
+                    onClick={async () => {
+                      const fid = selectedFloorId ?? currentMap?.floors[0]?.id
+                      if (!fid) return
+                      const r = await setRobotFloor(robotId, fid)
+                      setSlamMessage(
+                        r.ok
+                          ? `Loaded ${r.floorCode} (${r.blobBytes} B)`
+                          : `Failed: ${r.reason ?? 'unknown'}`,
+                      )
+                      await startSlamExplore(robotId)
+                    }}
+                    type="button"
+                  >
+                    Go to Floor
+                  </button>
+                  <button
+                    className="flex h-9 items-center justify-center rounded-lg bg-slate-700 text-xs font-medium text-white transition hover:bg-slate-800"
+                    onClick={async () => {
+                      const map = currentMap
+                      if (!map) return
+                      await saveSlamMap(robotId, { mapId: map.id, mapName: map.code })
+                      setSlamMessage(`Saved → map ${map.code}`)
+                    }}
+                    type="button"
+                  >
+                    Save Map
+                  </button>
+                </div>
+                <button
+                  className="flex h-9 w-full items-center justify-center rounded-lg bg-purple-600 text-xs font-medium text-white transition hover:bg-purple-700"
+                  onClick={async () => {
+                    setSlamMessage('Spinning…')
+                    const r = await relocalizeRobot(robotId)
+                    setSlamMessage(r.converged ? 'Converged!' : 'Did not converge')
+                  }}
+                  type="button"
+                >
+                  Where am I?
+                </button>
+                {slamMessage ? (
+                  <div className="text-xs text-slate-500">{slamMessage}</div>
+                ) : null}
+              </div>
             </div>
 
             {/* Danger Zone */}

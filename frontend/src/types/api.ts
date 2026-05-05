@@ -218,6 +218,7 @@ export interface InitialPoseRequest {
 }
 
 export interface SlamSaveRequest {
+  mapId: number
   mapName: string
 }
 
