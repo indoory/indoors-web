@@ -115,6 +115,31 @@ public class MapService {
     return viewAssemblerService.toMapMetadata(map);
   }
 
+  /** 'Untitled' draft 맵에 이름 부여 (= 사용자가 영구 저장). */
+  @Transactional
+  public IndoorMap renameMap(Long mapId, String name) {
+    IndoorMap map = findMap(mapId);
+    try {
+      java.lang.reflect.Field f = IndoorMap.class.getDeclaredField("name");
+      f.setAccessible(true);
+      f.set(map, name);
+      return mapRepository.save(map);
+    } catch (Exception e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "rename failed", e);
+    }
+  }
+
+  /** 현재 draft 맵 폐기. blob 파일도 같이 삭제. 다음 robot fetch 시 자동으로 새 Untitled 생성. */
+  @Transactional
+  public void discardMap(Long mapId) {
+    IndoorMap map = findMap(mapId);
+    String path = map.getRtabmapDbPath();
+    if (path != null) {
+      try { Files.deleteIfExists(Paths.get(path)); } catch (IOException ignored) {}
+    }
+    mapRepository.delete(map);
+  }
+
   /**
    * "Unknown session" 의 현재 rtabmap.db 를 새 맵으로 저장.
    *

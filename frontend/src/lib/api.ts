@@ -306,12 +306,25 @@ export function getMapMeta() {
 // 맵 PNG URL — <img src=...> 로 직접 사용
 export const MAP_PNG_URL = '/api/system/map.png'
 
-// 새 SLAM 세션을 이름 붙여 저장 (Unknown → 명명된 맵)
+// 새 SLAM 세션을 이름 붙여 저장 (Unknown → 명명된 맵). 현재는 거의 안 쓰임 — rename 으로 대체.
 export function saveCurrentSession(payload: { name: string; code?: string }) {
   return request<{ id: number; code: string; name: string }>(`/api/maps/save-session`, {
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+// Untitled draft 맵에 이름 부여 (= 영구 저장으로 승격)
+export function renameMap(mapId: number, name: string) {
+  return request<{ id: number; code: string; name: string }>(`/api/maps/${mapId}/name`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  })
+}
+
+// 현재 draft 맵 폐기 (row + blob 삭제). 다음 fetch 시 새 Untitled 자동 생성.
+export function discardMap(mapId: number) {
+  return request<void>(`/api/maps/${mapId}/discard`, { method: 'DELETE' })
 }
 
 // 저장된 맵 로드 (Unknown 종료, robot.mapId 갱신)

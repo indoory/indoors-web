@@ -48,6 +48,23 @@ public class MapController {
         map.getId(), map.getCode(), map.getName(), map.isActive(), map.getNav2YamlUrl());
   }
 
+  @Operation(summary = "Rename map", description = "Untitled 맵에 이름 부여 (= 영구 저장).")
+  @PatchMapping("/maps/{mapId}/name")
+  public ApiDtos.MapMetadataResponse renameMap(
+      @PathVariable Long mapId, @RequestBody ApiDtos.RenameMapRequest request) {
+    var map = mapService.renameMap(mapId, request.name());
+    return new ApiDtos.MapMetadataResponse(
+        map.getId(), map.getCode(), map.getName(), map.isActive(), map.getNav2YamlUrl());
+  }
+
+  @Operation(
+      summary = "Discard map",
+      description = "맵 row + blob 파일 삭제. 다음 fetch 시 새 Untitled 자동 생성.")
+  @DeleteMapping("/maps/{mapId}/discard")
+  public void discardMap(@PathVariable Long mapId) {
+    mapService.discardMap(mapId);
+  }
+
   @Operation(summary = "List maps", description = "Returns all semantic map metadata entries.")
   @GetMapping("/maps")
   public List<ApiDtos.MapMetadataResponse> getMaps() {

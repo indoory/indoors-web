@@ -37,6 +37,8 @@ public final class ApiDtos {
 
   public record LoadMapRequest(Long mapId) {}
 
+  public record RenameMapRequest(String name) {}
+
   public record InitialPoseRequest(double x, double y, double yaw) {}
 
   public record DispatchCommandRequest(Long locationId) {}

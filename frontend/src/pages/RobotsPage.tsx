@@ -2,18 +2,17 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity, AlertTriangle, Battery, BatteryWarning,
   Bot, ChevronDown, ChevronRight, Compass, Database,
-  ExternalLink, HardDrive, HelpCircle, MapPin, Pause, Play,
-  RotateCcw, Save, Send, Square, Wifi, WifiOff,
+  ExternalLink, HardDrive, MapPin, Pause, Pencil, Play,
+  RotateCcw, Save, Send, Square, Trash2, Wifi, WifiOff,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { AppShell } from '../components/AppShell'
 import { LoadingView } from '../components/LoadingView'
 import { StatusBadge } from '../components/StatusBadge'
 import {
-  dispatchRobot, emergencyStopRobot, getLivePose, getMapMeta,
+  discardMap, dispatchRobot, emergencyStopRobot, getLivePose, getMapMeta,
   getRobots, getSystemHealth, listMaps, loadSavedMap, MAP_PNG_URL,
-  pauseRobot, relocalizeRobot, resumeRobot, saveCurrentSession,
-  startSlamExplore,
+  pauseRobot, relocalizeRobot, renameMap, resumeRobot, startSlamExplore,
 } from '../lib/api'
 import { formatRelativeTime } from '../lib/utils'
 
@@ -29,7 +28,7 @@ export function RobotsPage() {
   const robotsQuery = useQuery({ queryKey: ['robots'], queryFn: getRobots, refetchInterval: 5000 })
   const robot = robotsQuery.data?.[0]
   const robotId = robot?.id
-  const isUnknown = robot != null && robot.mapId == null
+  const isDraft = robot?.mapName === 'Untitled' || !robot?.mapName
 
   const mapsQuery = useQuery({ queryKey: ['maps'], queryFn: listMaps, refetchInterval: 30000 })
   const healthQuery = useQuery({
@@ -52,18 +51,28 @@ export function RobotsPage() {
 
   const refresh = () => queryClient.invalidateQueries({ predicate: () => true })
 
-  const saveMut = useMutation({
+  // 현재 맵 (draft) 의 이름을 사용자가 입력한 값으로 변경 = 영구 저장.
+  const renameMut = useMutation({
     mutationFn: async () => {
       const name = newMapName.trim()
-      if (!name) return null
-      return saveCurrentSession({ name })
+      if (!name || !robot?.mapId) return null
+      return renameMap(robot.mapId, name)
     },
     onSuccess: (r) => {
       if (!r) return
-      log(`✓ Saved as "${r.name}" (id=${r.id})`)
+      log(`✓ Renamed to "${r.name}"`)
       setNewMapName('')
       refresh()
     },
+  })
+
+  // 현재 맵 폐기 — 다음 fetch 시 새 Untitled 자동 생성.
+  const discardMut = useMutation({
+    mutationFn: async () => {
+      if (!robot?.mapId) return null
+      return discardMap(robot.mapId)
+    },
+    onSuccess: () => { log('✓ Discarded current map'); refresh() },
   })
 
   const loadMut = useMutation({
@@ -165,20 +174,27 @@ export function RobotsPage() {
         </div>
       </div>
 
-      {/* Unknown session 배너 */}
-      {isUnknown && (
-        <div className="mb-6 flex items-center justify-between rounded-xl border-2 border-dashed border-amber-300 bg-amber-50 p-4">
-          <div className="flex items-center gap-3">
-            <HelpCircle className="h-6 w-6 text-amber-600" />
-            <div>
-              <div className="font-semibold text-amber-900">Unknown session</div>
-              <div className="text-xs text-amber-700">
-                현재 SLAM 데이터가 어느 맵인지 정의되지 않았습니다. 탐사하거나, 이름을 붙여 저장하거나, 기존 맵에 합치세요.
-              </div>
+      {/* 현재 맵 배너 — draft 면 노란색, 명명됐으면 emerald */}
+      <div className={`mb-6 flex items-center justify-between rounded-xl border p-4 ${
+        isDraft
+          ? 'border-2 border-dashed border-amber-300 bg-amber-50'
+          : 'border-emerald-300 bg-emerald-50'
+      }`}>
+        <div className="flex items-center gap-3">
+          <Database className={`h-6 w-6 ${isDraft ? 'text-amber-600' : 'text-emerald-600'}`} />
+          <div>
+            <div className={`font-semibold ${isDraft ? 'text-amber-900' : 'text-emerald-900'}`}>
+              현재 맵: {robot?.mapName ?? '(loading...)'}
+              {isDraft && <span className="ml-2 text-xs italic">— 저장 안 됨</span>}
+            </div>
+            <div className={`text-xs ${isDraft ? 'text-amber-700' : 'text-emerald-700'}`}>
+              {isDraft
+                ? '이름을 붙여 저장하거나, 기존 맵에 합치거나, 폐기하세요.'
+                : `map_id=${robot?.mapId}, code=${robot?.mapName ? '확인' : '—'}`}
             </div>
           </div>
         </div>
-      )}
+      </div>
 
       {/* 메인: 좌(컨트롤) + 우(라이브 맵) */}
       <div className="mb-6 grid grid-cols-12 gap-6">
@@ -215,24 +231,36 @@ export function RobotsPage() {
               <span className="text-sm font-semibold text-slate-900">SLAM 세션</span>
             </div>
 
-            {/* Save current as ... */}
+            {/* 현재 맵 이름 변경 (= 저장) + 폐기 */}
             <div className="space-y-2">
-              <Label>현재 세션을 새 맵으로 저장</Label>
+              <Label>{isDraft ? '이 맵에 이름 붙여 저장' : '맵 이름 변경'}</Label>
               <div className="flex gap-2">
                 <input
                   className="h-10 flex-1 rounded-lg border border-slate-300 bg-white px-3 text-sm"
                   onChange={(e) => setNewMapName(e.target.value)}
-                  placeholder="예: 5층, lab, hospital_2f"
+                  placeholder={robot?.mapName ?? '예: 5층, lab, hospital_2f'}
                   value={newMapName}
                 />
                 <ActionButton
-                  onClick={() => saveMut.mutate()}
-                  disabled={saveMut.isPending || !newMapName.trim()}
+                  onClick={() => renameMut.mutate()}
+                  disabled={renameMut.isPending || !newMapName.trim() || !robot?.mapId}
                   color="slate"
-                  icon={<Save className="h-4 w-4" />}
-                  label="Save"
+                  icon={<Pencil className="h-4 w-4" />}
+                  label={isDraft ? 'Save' : 'Rename'}
                 />
               </div>
+              <button
+                className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-red-200 bg-red-50 text-xs font-medium text-red-700 transition hover:bg-red-100 disabled:opacity-50"
+                disabled={discardMut.isPending || !robot?.mapId}
+                onClick={() => {
+                  if (confirm(`현재 맵 "${robot?.mapName}" 을 폐기합니다. 진짜?`)) {
+                    discardMut.mutate()
+                  }
+                }}
+                type="button"
+              >
+                <Trash2 className="h-3 w-3" /> 폐기 (다음 fetch 시 새 Untitled 자동 생성)
+              </button>
             </div>
 
             {/* Load saved map */}

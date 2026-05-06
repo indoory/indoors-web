@@ -36,11 +36,12 @@ public class RobotService {
   private final TaskService taskService;
   private final RobotAdapterClient adapterClient;
 
-  @Transactional(readOnly = true)
+  @Transactional
   public List<ApiDtos.RobotSummaryResponse> getRobots() {
     return robotRepository.findAllByOrderByIdAsc().stream()
         .map(
             robot -> {
+              ensureCurrentMap(robot);
               Task activeTask = taskService.findActiveTaskForRobot(robot.getId());
               Floor floor = robot.getFloorId() == null ? null : findFloorOrNull(robot.getFloorId());
               IndoorMap map = robot.getMapId() == null ? null : findMapOrNull(robot.getMapId());
@@ -49,10 +50,31 @@ public class RobotService {
         .toList();
   }
 
-  @Transactional(readOnly = true)
+  /**
+   * 로봇이 항상 현재 매핑 세션에 대응하는 IndoorMap 을 가지고 있도록 보장.
+   * mapId 가 null 이거나 referenced map 이 삭제됐으면 'Untitled-{ts}' 새 row 생성 후 연결.
+   * 데이터(rtabmap.db blob) 는 별개 — 이 메서드는 메타 row 만 보장.
+   */
+  @Transactional
+  public void ensureCurrentMap(Robot robot) {
+    Long mid = robot.getMapId();
+    if (mid != null && mapRepository.findById(mid).isPresent()) return;
+    String code = "session-" + System.currentTimeMillis();
+    IndoorMap fresh = new IndoorMap(code, "Untitled");
+    mapRepository.save(fresh);
+    try {
+      java.lang.reflect.Field f = Robot.class.getDeclaredField("mapId");
+      f.setAccessible(true);
+      f.set(robot, fresh.getId());
+      robotRepository.save(robot);
+    } catch (Exception ignored) {}
+  }
+
+  @Transactional
   public ApiDtos.RobotDetailResponse getRobot(Long robotId) {
     Robot robot = findRobot(robotId);
     Task activeTask = taskService.findActiveTaskForRobot(robot.getId());
+    ensureCurrentMap(robot);
     Floor floor = robot.getFloorId() == null ? null : findFloorOrNull(robot.getFloorId());
     IndoorMap map = robot.getMapId() == null ? null : findMapOrNull(robot.getMapId());
 
