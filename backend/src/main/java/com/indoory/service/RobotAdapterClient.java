@@ -167,6 +167,20 @@ public class RobotAdapterClient {
     post("/api/robots/" + ADAPTER_ROBOT_ID + "/initial-pose", Map.of("x", x, "y", y, "yaw", yaw));
   }
 
+  /** 어댑터의 종합 시스템 헬스 (디버깅 콘솔용). 어댑터 down 이면 status=down 만. */
+  public Map<String, Object> systemHealth() {
+    if (!properties.isEnabled()) {
+      return Map.of("adapter", "disabled", "bridge", "off");
+    }
+    return get("/api/system/health");
+  }
+
+  /** 어댑터의 마지막 /odom pose (sim 라이브 상태 확인용). */
+  public Map<String, Object> lastPose() {
+    if (!properties.isEnabled()) return Map.of("available", false);
+    return get("/api/system/last_pose");
+  }
+
   // ── HTTP helpers ─────────────────────────────────────────────────────────
 
   private Map<String, Object> get(String path) {

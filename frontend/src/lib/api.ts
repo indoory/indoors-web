@@ -257,6 +257,28 @@ export function relocalizeRobot(robotId: number | string) {
   )
 }
 
+export interface SystemHealth {
+  adapter?: string
+  bridge?: string
+  sim_alive?: boolean
+  rtabmap_db_path?: string
+  rtabmap_db_size_mb?: number
+  ros_topic_count?: number
+  ros_expected_topics?: Record<string, boolean>
+  disk_free_gb?: number
+  floor_db_dir?: string
+}
+
+export function getSystemHealth(robotId: number | string) {
+  return request<SystemHealth>(`/api/robots/${robotId}/system/health`)
+}
+
+export function getLivePose(robotId: number | string) {
+  return request<{ available: boolean; x?: number | null; y?: number | null; raw?: string; error?: string }>(
+    `/api/robots/${robotId}/system/pose`,
+  )
+}
+
 // ── Maps ─────────────────────────────────────────────────────────────────────
 
 export function setMapNav2YamlUrl(mapId: number | string, payload: SetNav2YamlUrlRequest) {

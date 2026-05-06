@@ -235,6 +235,18 @@ public class RobotController {
     return adapterClient.relocalize();
   }
 
+  @Operation(summary = "System health", description = "어댑터+시뮬+ROS 토픽 종합 헬스.")
+  @GetMapping("/{robotId}/system/health")
+  public Map<String, Object> systemHealth(@PathVariable Long robotId) {
+    return adapterClient.systemHealth();
+  }
+
+  @Operation(summary = "Live pose", description = "어댑터에서 /odom 의 현재 pose 1회 조회.")
+  @GetMapping("/{robotId}/system/pose")
+  public Map<String, Object> livePose(@PathVariable Long robotId) {
+    return adapterClient.lastPose();
+  }
+
   @Operation(summary = "Delete robot", description = "Deletes a robot.")
   @DeleteMapping("/{robotId}")
   public void deleteRobot(@PathVariable Long robotId, Authentication authentication) {

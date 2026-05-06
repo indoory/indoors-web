@@ -224,3 +224,87 @@ def explore_status(robot_id: str):
 @app.get('/health')
 def health():
     return {'status': 'ok', 'rtabmap_db_exists': RTABMAP_DB.exists()}
+
+
+@app.get('/api/system/health')
+def system_health():
+    """관제·디버깅 콘솔용 종합 헬스. ROS·시뮬·어댑터·맵 DB 한 번에."""
+    import shutil
+    # ROS 토픽 list (있는 토픽만)
+    ros_topics = []
+    try:
+        proc = subprocess.run(
+            ['bash', '-c',
+             f'source {ROS_SETUP} && source {WS_SETUP} && ros2 topic list 2>/dev/null'],
+            capture_output=True, text=True, timeout=5)
+        ros_topics = [t for t in proc.stdout.strip().split('\n') if t]
+    except Exception:
+        pass
+
+    # 시뮬 PID (gzserver) 살아있는지
+    sim_alive = False
+    try:
+        proc = subprocess.run(
+            ['pgrep', '-f', 'gzserver'], capture_output=True, text=True, timeout=2)
+        sim_alive = proc.returncode == 0 and proc.stdout.strip() != ''
+    except Exception:
+        pass
+
+    db_size = RTABMAP_DB.stat().st_size if RTABMAP_DB.exists() else 0
+    disk = shutil.disk_usage('/')
+
+    expected = ['/odom', '/scan', '/map', '/tf', '/tf_static',
+                '/camera/image_raw', '/d456/depth/image_raw',
+                '/rtabmap/info', '/rtabmap/grid_map']
+    topic_status = {t: t in ros_topics for t in expected}
+
+    return {
+        'adapter': 'ok',
+        'sim_alive': sim_alive,
+        'rtabmap_db_path': str(RTABMAP_DB),
+        'rtabmap_db_size_mb': round(db_size / 1e6, 2),
+        'ros_topic_count': len(ros_topics),
+        'ros_expected_topics': topic_status,
+        'disk_free_gb': round(disk.free / 1e9, 1),
+        'floor_db_dir': str(FLOOR_DB_DIR),
+    }
+
+
+@app.get('/api/system/topic_hz/{topic_name:path}')
+def topic_hz(topic_name: str, samples: int = 10):
+    """단일 토픽의 publish 속도 측정 (몇 초 동안 sample 회 메시지 카운트)."""
+    cmd = (
+        f'source {ROS_SETUP} && source {WS_SETUP} && '
+        f'timeout 3 ros2 topic hz /{topic_name.lstrip("/")} 2>&1 | head -8'
+    )
+    try:
+        proc = subprocess.run(['bash', '-c', cmd], capture_output=True, text=True, timeout=8)
+        return {'topic': topic_name, 'output': proc.stdout[-1000:]}
+    except Exception as e:
+        return {'topic': topic_name, 'error': str(e)}
+
+
+@app.get('/api/system/last_pose')
+def last_pose():
+    """현재 /odom 의 마지막 pose 한 번 조회 (sim 상태 디버깅)."""
+    cmd = (
+        f'source {ROS_SETUP} && source {WS_SETUP} && '
+        'timeout 3 ros2 topic echo /odom --once 2>/dev/null | head -20'
+    )
+    try:
+        proc = subprocess.run(['bash', '-c', cmd], capture_output=True, text=True, timeout=6)
+        out = proc.stdout
+        if not out.strip():
+            return {'available': False}
+        # 간단히 x, y, yaw 만 파싱
+        import re
+        x = re.search(r'x:\s*(-?[\d.e+-]+)', out)
+        y = re.search(r'y:\s*(-?[\d.e+-]+)', out)
+        return {
+            'available': True,
+            'raw': out[:500],
+            'x': float(x.group(1)) if x else None,
+            'y': float(y.group(1)) if y else None,
+        }
+    except Exception as e:
+        return {'available': False, 'error': str(e)}
