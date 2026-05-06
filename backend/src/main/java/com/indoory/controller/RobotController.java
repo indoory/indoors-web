@@ -201,16 +201,29 @@ public class RobotController {
         mapRepository
             .findById(floor.getMapId())
             .orElseThrow(() -> new IllegalArgumentException("map not found"));
-    if (map.getRtabmapDbPath() == null) {
-      return Map.of("ok", false, "reason", "no rtabmap_db saved on map " + map.getId());
-    }
-    try {
-      byte[] blob = java.nio.file.Files.readAllBytes(
-          java.nio.file.Paths.get(map.getRtabmapDbPath()));
-      adapterClient.setFloor(floor.getCode(), blob);
-      return Map.of("ok", true, "floorCode", floor.getCode(), "blobBytes", blob.length);
-    } catch (java.io.IOException e) {
-      return Map.of("ok", false, "reason", "failed to read blob: " + e.getMessage());
+
+    // 맵이 저장돼 있으면: blob 푸시 → adapter 가 rtabmap localization 모드로 reload
+    // 없으면 : adapter 에 fresh-mapping 신호 → rtabmap reset + mapping 모드 (새 맵)
+    if (map.getRtabmapDbPath() != null) {
+      try {
+        byte[] blob = java.nio.file.Files.readAllBytes(
+            java.nio.file.Paths.get(map.getRtabmapDbPath()));
+        adapterClient.setFloor(floor.getCode(), blob);
+        return Map.of(
+            "ok", true,
+            "mode", "localization",
+            "floorCode", floor.getCode(),
+            "blobBytes", blob.length);
+      } catch (java.io.IOException e) {
+        return Map.of("ok", false, "reason", "failed to read blob: " + e.getMessage());
+      }
+    } else {
+      adapterClient.setFloorFresh(floor.getCode());
+      return Map.of(
+          "ok", true,
+          "mode", "mapping",
+          "floorCode", floor.getCode(),
+          "note", "no saved map — starting fresh mapping");
     }
   }
 

@@ -255,10 +255,15 @@ export function RobotDetailPage() {
                       const fid = selectedFloorId ?? currentMap?.floors[0]?.id
                       if (!fid) return
                       const r = await setRobotFloor(robotId, fid)
+                      if (!r.ok) {
+                        setSlamMessage(`Failed: ${r.reason ?? 'unknown'}`)
+                        return
+                      }
+                      const sizeMb = r.blobBytes ? `${(r.blobBytes / 1e6).toFixed(0)}MB` : ''
                       setSlamMessage(
-                        r.ok
-                          ? `Loaded ${r.floorCode} (${r.blobBytes} B)`
-                          : `Failed: ${r.reason ?? 'unknown'}`,
+                        r.mode === 'localization'
+                          ? `Loaded ${r.floorCode} (${sizeMb}) — localization`
+                          : `New map for ${r.floorCode} — start exploring`,
                       )
                       await startSlamExplore(robotId)
                     }}

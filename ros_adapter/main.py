@@ -139,6 +139,33 @@ async def floor_set(robot_id: str, floorCode: str, file: UploadFile = File(...))
     }
 
 
+# ── 새 맵으로 시작 (저장된 .db 없는 floor) ─────────────────────────────
+@app.post('/api/robots/{robot_id}/floor/fresh')
+async def floor_fresh(robot_id: str, request: Request):
+    """현재 working memory 비우고 mapping 모드 진입. 새로운 floor 매핑 시작.
+
+    rtabmap 의 /rtabmap/reset 은 working memory + DB 모두 초기화.
+    다음 save 시점에 새 .db 가 Spring 으로 푸시됨.
+    """
+    body = await request.body()
+    try:
+        payload = await request.json() if body else {}
+    except Exception:
+        payload = {}
+    floor_code = payload.get('floorCode', 'unknown')
+    log.info('floor/fresh: %s — resetting rtabmap to start new map', floor_code)
+
+    ok1, _ = _ros_service_call('/rtabmap/reset', 'std_srvs/srv/Empty')
+    ok2, _ = _ros_service_call(
+        '/rtabmap/set_mode_mapping', 'std_srvs/srv/Empty')
+    return {
+        'ok': ok1 or ok2,
+        'floorCode': floor_code,
+        'mode': 'mapping',
+        'note': 'fresh start — explore via /slam/explore/start to fill map',
+    }
+
+
 # ── 글로벌 재로컬: 회전 + RTAB-Map BoW 매칭 ────────────────────────────
 @app.post('/api/robots/{robot_id}/slam/relocalize')
 def relocalize(robot_id: str):

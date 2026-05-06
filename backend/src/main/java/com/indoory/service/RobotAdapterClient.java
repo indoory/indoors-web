@@ -125,6 +125,14 @@ public class RobotAdapterClient {
     }
   }
 
+  /** 저장된 맵이 없는 층으로 전환 — adapter 가 rtabmap reset + mapping 모드 진입. */
+  public void setFloorFresh(String floorCode) {
+    if (!properties.isEnabled()) return;
+    post(
+        "/api/robots/" + ADAPTER_ROBOT_ID + "/floor/fresh",
+        Map.of("floorCode", floorCode));
+  }
+
   /** 회전·재로컬 트리거. 어댑터가 동기 spin 후 수렴 여부 JSON 반환. */
   public Map<String, Object> relocalize() {
     if (!properties.isEnabled()) return Map.of("converged", false, "skipped", true);

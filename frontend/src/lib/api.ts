@@ -237,10 +237,17 @@ export function stopSlam(robotId: number | string) {
 
 // ── 멀티세션 SLAM (RTAB-Map) ────────────────────────────────────────────
 export function setRobotFloor(robotId: number | string, floorId: number) {
-  return request<{ ok: boolean; reason?: string; floorCode?: string; blobBytes?: number }>(
-    `/api/robots/${robotId}/floor/set`,
-    { method: 'POST', body: JSON.stringify({ floorId }) },
-  )
+  return request<{
+    ok: boolean
+    mode?: 'mapping' | 'localization'
+    reason?: string
+    floorCode?: string
+    blobBytes?: number
+    note?: string
+  }>(`/api/robots/${robotId}/floor/set`, {
+    method: 'POST',
+    body: JSON.stringify({ floorId }),
+  })
 }
 
 export function relocalizeRobot(robotId: number | string) {
