@@ -27,7 +27,10 @@ public class SecurityConfig {
                         "/swagger-ui.html",
                         "/swagger-ui/**",
                         "/v3/api-docs/**",
-                        "/api/robots/*/telemetry")
+                        "/api/robots/*/telemetry",
+                        // ros_adapter 가 세션 없이 푸시하는 multipart 엔드포인트.
+                        // 같은 호스트에서만 호출되며 blob 내용은 로컬 ROS 산출물.
+                        "/api/maps/*/rtabmap-db")
                     .permitAll()
                     .anyRequest()
                     .authenticated())

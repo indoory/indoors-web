@@ -1,5 +1,6 @@
 package com.indoory.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.indoory.config.AdapterProperties;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -11,6 +12,7 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -32,6 +34,21 @@ public class RobotAdapterClient {
 
   private final AdapterProperties properties;
   private final RestTemplateBuilder restTemplateBuilder;
+  private final ObjectMapper objectMapper = new ObjectMapper();
+
+  /**
+   * RestTemplate 을 SimpleClientHttpRequestFactory (HttpURLConnection 기반,
+   * HTTP/1.1 만) 로 강제. 기본 RestTemplate 은 Java 17 HttpClient 를 쓰는데,
+   * 그 클라이언트가 plaintext 요청에 'Upgrade: h2c' 헤더를 자동으로 붙이고
+   * body 를 별도 패킷으로 보내서 uvicorn(h11) 이 이를 무시하고 빈 body 로
+   * 처리하는 버그가 있다. 본문 손실 방지 위해 모든 호출에 동일한 factory.
+   */
+  private RestTemplate http11Template() {
+    SimpleClientHttpRequestFactory rf = new SimpleClientHttpRequestFactory();
+    rf.setConnectTimeout(5000);
+    rf.setReadTimeout(60000);
+    return restTemplateBuilder.requestFactory(() -> rf).build();
+  }
 
   /** Forwards a dispatch command with the target locationId to the adapter. */
   public void dispatch(Long locationId) {
@@ -93,7 +110,7 @@ public class RobotAdapterClient {
     String url = properties.getBaseUrl() + "/api/robots/" + ADAPTER_ROBOT_ID
         + "/floor/set?floorCode=" + floorCode;
     try {
-      RestTemplate rt = restTemplateBuilder.build();
+      RestTemplate rt = http11Template();
       HttpHeaders headers = new HttpHeaders();
       headers.setContentType(MediaType.MULTIPART_FORM_DATA);
       MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
@@ -113,7 +130,7 @@ public class RobotAdapterClient {
     if (!properties.isEnabled()) return Map.of("converged", false, "skipped", true);
     String url = properties.getBaseUrl() + "/api/robots/" + ADAPTER_ROBOT_ID + "/slam/relocalize";
     try {
-      RestTemplate rt = restTemplateBuilder.build();
+      RestTemplate rt = http11Template();
       return rt.exchange(
           url, HttpMethod.POST, new HttpEntity<>(null, null),
           new ParameterizedTypeReference<Map<String, Object>>() {}).getBody();
@@ -147,7 +164,7 @@ public class RobotAdapterClient {
   private Map<String, Object> get(String path) {
     String url = properties.getBaseUrl() + path;
     try {
-      RestTemplate restTemplate = restTemplateBuilder.build();
+      RestTemplate restTemplate = http11Template();
       return restTemplate
           .exchange(
               url, HttpMethod.GET, null, new ParameterizedTypeReference<Map<String, Object>>() {})
@@ -161,12 +178,16 @@ public class RobotAdapterClient {
   private void post(String path, Object body) {
     String url = properties.getBaseUrl() + path;
     try {
-      RestTemplate restTemplate = restTemplateBuilder.build();
+      RestTemplate restTemplate = http11Template();
       HttpHeaders headers = new HttpHeaders();
       headers.setContentType(MediaType.APPLICATION_JSON);
-      HttpEntity<Object> entity = new HttpEntity<>(body, headers);
+      // RestTemplate 의 기본 MessageConverter 가 Map<String, Object> 를 가끔
+      // 빈 본문으로 직렬화하는 케이스가 있어, ObjectMapper 로 직접 JSON 문자열로
+      // 변환해 String 으로 전송 (가장 안전).
+      String json = body == null ? "" : objectMapper.writeValueAsString(body);
+      HttpEntity<String> entity = new HttpEntity<>(json, headers);
       restTemplate.postForEntity(url, entity, Void.class);
-      log.info("Adapter command sent: POST {}", url);
+      log.info("Adapter command sent: POST {} ({} bytes)", url, json.length());
     } catch (Exception e) {
       log.warn("Adapter command failed: POST {} — {}", url, e.getMessage());
     }

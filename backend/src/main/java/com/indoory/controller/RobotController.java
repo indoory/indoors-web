@@ -201,12 +201,17 @@ public class RobotController {
         mapRepository
             .findById(floor.getMapId())
             .orElseThrow(() -> new IllegalArgumentException("map not found"));
-    byte[] blob = map.getRtabmapDb();
-    if (blob == null || blob.length == 0) {
+    if (map.getRtabmapDbPath() == null) {
       return Map.of("ok", false, "reason", "no rtabmap_db saved on map " + map.getId());
     }
-    adapterClient.setFloor(floor.getCode(), blob);
-    return Map.of("ok", true, "floorCode", floor.getCode(), "blobBytes", blob.length);
+    try {
+      byte[] blob = java.nio.file.Files.readAllBytes(
+          java.nio.file.Paths.get(map.getRtabmapDbPath()));
+      adapterClient.setFloor(floor.getCode(), blob);
+      return Map.of("ok", true, "floorCode", floor.getCode(), "blobBytes", blob.length);
+    } catch (java.io.IOException e) {
+      return Map.of("ok", false, "reason", "failed to read blob: " + e.getMessage());
+    }
   }
 
   @Operation(

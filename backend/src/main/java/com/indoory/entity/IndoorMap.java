@@ -1,10 +1,7 @@
 package com.indoory.entity;
 
-import jakarta.persistence.Basic;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.FetchType;
-import jakarta.persistence.Lob;
 import jakarta.persistence.Table;
 import java.time.Instant;
 import lombok.AccessLevel;
@@ -29,11 +26,13 @@ public class IndoorMap extends BaseEntity {
   @Column(name = "nav2_yaml_url")
   private String nav2YamlUrl;
 
-  // RTAB-Map .db 영속화. LAZY 로 무거운 blob 이 일반 SELECT 에 묻어가지 않게.
-  @Lob
-  @Basic(fetch = FetchType.LAZY)
-  @Column(name = "rtabmap_db", columnDefinition = "bytea")
-  private byte[] rtabmapDb;
+  // RTAB-Map .db 는 파일시스템에 저장 (PostgreSQL bytea 1GB 한계 회피).
+  // 경로만 DB 에 보존. 블롭 자체는 indoory.maps.storageDir/{id}.db.
+  @Column(name = "rtabmap_db_path")
+  private String rtabmapDbPath;
+
+  @Column(name = "rtabmap_db_size")
+  private Long rtabmapDbSize;
 
   @Column(name = "rtabmap_db_saved_at")
   private Instant rtabmapDbSavedAt;
@@ -56,8 +55,9 @@ public class IndoorMap extends BaseEntity {
     this.active = false;
   }
 
-  public void replaceRtabmapDb(byte[] blob) {
-    this.rtabmapDb = blob;
+  public void recordRtabmapDb(String path, long size) {
+    this.rtabmapDbPath = path;
+    this.rtabmapDbSize = size;
     this.rtabmapDbSavedAt = Instant.now();
   }
 }

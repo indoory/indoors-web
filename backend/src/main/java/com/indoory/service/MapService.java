@@ -115,22 +115,40 @@ public class MapService {
     return viewAssemblerService.toMapMetadata(map);
   }
 
-  // ── RTAB-Map .db blob ─────────────────────────────────────────────────
+  // ── RTAB-Map .db (파일시스템 저장) ────────────────────────────────────
+  // PostgreSQL bytea 1GB 한계 회피. DB 에는 path/size/timestamp 만, 실제 blob 은
+  // /var/indoory/maps/{id}.db 로 저장.
+  private static final Path STORAGE_DIR = Paths.get(
+      System.getenv().getOrDefault("INDOORY_MAP_STORAGE", "/var/indoory/maps"));
+
   @Transactional
   public void saveRtabmapDb(Long mapId, byte[] blob) {
     IndoorMap map = findMap(mapId);
-    map.replaceRtabmapDb(blob);
-    mapRepository.save(map);
+    try {
+      if (!Files.exists(STORAGE_DIR)) Files.createDirectories(STORAGE_DIR);
+      Path target = STORAGE_DIR.resolve(mapId + ".db");
+      Files.write(target, blob);
+      map.recordRtabmapDb(target.toString(), blob.length);
+      mapRepository.save(map);
+    } catch (IOException e) {
+      throw new ResponseStatusException(
+          HttpStatus.INTERNAL_SERVER_ERROR, "failed to write blob to disk", e);
+    }
   }
 
   @Transactional(readOnly = true)
   public byte[] getRtabmapDb(Long mapId) {
     IndoorMap map = findMap(mapId);
-    byte[] blob = map.getRtabmapDb();
-    if (blob == null) {
+    String path = map.getRtabmapDbPath();
+    if (path == null) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, "no rtabmap_db on map " + mapId);
     }
-    return blob;
+    try {
+      return Files.readAllBytes(Paths.get(path));
+    } catch (IOException e) {
+      throw new ResponseStatusException(
+          HttpStatus.INTERNAL_SERVER_ERROR, "failed to read blob: " + path, e);
+    }
   }
 
   @Transactional

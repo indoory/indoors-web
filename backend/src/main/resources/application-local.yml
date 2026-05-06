@@ -1,0 +1,23 @@
+indoory:
+  bridge:
+    enabled: true
+    baseUrl: http://localhost:8000
+spring:
+  datasource:
+    # binaryTransfer=true: PostgreSQL bytea 가 hex 인코딩으로 2배가 되어 1GB 한계
+    # 초과하는 문제 회피 (RTAB-Map .db 가 ~1GB 가까이 됨).
+    url: jdbc:postgresql://localhost:5432/indoory?binaryTransfer=true&binaryTransferEnable=bytea
+    username: indoory
+    password: indoory
+  jpa:
+    hibernate:
+      ddl-auto: update
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 5GB
+      max-request-size: 5GB
+server:
+  tomcat:
+    max-swallow-size: -1
+    max-http-form-post-size: -1

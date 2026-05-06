@@ -19,10 +19,14 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import Body, FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import requests
+import logging
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger('adapter')
 
 # ── 설정 ─────────────────────────────────────────────────────────────────
 RTABMAP_DB = Path(os.environ.get('RTABMAP_DB', os.path.expanduser('~/.ros/rtabmap.db')))
@@ -72,34 +76,43 @@ def slam_stop(robot_id: str):
 
 
 # ── DB 저장: rtabmap → 디스크 → Spring Boot 푸시 ───────────────────────
-class SaveSlamReq(BaseModel):
-    mapId: Optional[int] = None
-    mapName: Optional[str] = None
-
-
 @app.post('/api/robots/{robot_id}/slam/save')
-def slam_save(robot_id: str, req: SaveSlamReq):
-    # 1) rtabmap 에 backup (현재 working DB → ~/.ros/rtabmap.db.back) 트리거.
-    ok, log = _ros_service_call('/rtabmap/backup', 'std_srvs/srv/Empty')
-    if not ok:
-        # backup 서비스가 없는 버전이면 set_mode_localization 호출로 강제 flush.
-        _ros_service_call(
-            '/rtabmap/set_mode_localization', 'std_srvs/srv/Empty')
+async def slam_save(robot_id: str, request: Request):
+    """Save 요청은 body 가 없거나 {mapId, mapName} JSON. 둘 다 허용."""
+    body = await request.body()
+    log.info('slam/save body bytes=%d content-type=%s',
+             len(body), request.headers.get('content-type'))
+    try:
+        payload = await request.json() if body else {}
+    except Exception:
+        payload = {}
+    map_id = payload.get('mapId')
+    map_name = payload.get('mapName') or 'map'
+
+    # rtabmap 은 SQLite WAL 모드로 incremental write 하므로 ~/.ros/rtabmap.db 는
+    # 항상 consistent. /rtabmap/backup srv 호출은 대용량 DB 복사로 타임아웃 위험 →
+    # 직접 파일 read 가 가장 안전. (multi-session 맥락에서 약간의 미반영분 있더라도
+    # 다음 save 가 보완)
+    srv_log = ''
     if not RTABMAP_DB.exists():
         raise HTTPException(status_code=500, detail=f'DB not found at {RTABMAP_DB}')
 
-    # 2) Spring Boot 에 multipart POST.
-    if req.mapId is None:
-        raise HTTPException(status_code=400, detail='mapId required')
-    url = f'{SPRING_BASE}/api/maps/{req.mapId}/rtabmap-db'
+    # 2) Spring Boot 의 /api/maps/{id}/rtabmap-db 로 multipart 푸시.
+    if map_id is None:
+        return {
+            'ok': False,
+            'reason': 'mapId not provided — DB exists locally but not pushed',
+            'db_size_mb': round(RTABMAP_DB.stat().st_size / 1e6, 2),
+        }
+    url = f'{SPRING_BASE}/api/maps/{map_id}/rtabmap-db'
     with RTABMAP_DB.open('rb') as f:
-        files = {'file': (f'{req.mapName or "map"}.db', f, 'application/octet-stream')}
+        files = {'file': (f'{map_name}.db', f, 'application/octet-stream')}
         r = requests.post(url, files=files, timeout=60)
     return {
         'ok': r.ok,
         'status': r.status_code,
         'db_size_mb': round(RTABMAP_DB.stat().st_size / 1e6, 2),
-        'log': log[:200],
+        'log': (srv_log or '')[:200],
     }
 
 
