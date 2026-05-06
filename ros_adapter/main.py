@@ -112,8 +112,10 @@ def _start_ros_subscriber() -> None:
                          reliability=ReliabilityPolicy.RELIABLE,
                          durability=DurabilityPolicy.TRANSIENT_LOCAL)
     node.create_subscription(Odometry, '/odom', odom_cb, qos_odom)
-    node.create_subscription(OccupancyGrid, '/map', map_cb, qos_map)
-    log.info('rclpy subscribers /odom + /map started (cached)')
+    # rtabmap 의 실제 OccupancyGrid 발행 토픽: /rtabmap/map (또는 /rtabmap/grid_prob_map).
+    # /map 으로 remap 하려 했으나 launch 의 'grid_map' 키는 존재하지 않아 no-op 였음.
+    node.create_subscription(OccupancyGrid, '/rtabmap/map', map_cb, qos_map)
+    log.info('rclpy subscribers /odom + /rtabmap/map started (cached)')
 
     try:
         rclpy.spin(node)
