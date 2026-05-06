@@ -67,7 +67,10 @@ def _start_ros_subscriber() -> None:
         log.warning('rclpy import failed — cache disabled: %s', e)
         return
 
-    rclpy.init(args=None)
+    try:
+        rclpy.init(args=None)
+    except RuntimeError:
+        pass  # 이미 init 됨 (uvicorn --reload 가 모듈 다시 import 한 경우 등)
     node = Node('indoory_adapter_telemetry')
 
     def odom_cb(msg: Odometry) -> None:
