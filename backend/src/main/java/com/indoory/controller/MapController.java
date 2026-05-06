@@ -36,6 +36,18 @@ public class MapController {
     return mapService.createMap(request);
   }
 
+  @Operation(
+      summary = "Save current SLAM session as named map",
+      description =
+          "현재 ~/.ros/rtabmap.db (Unknown session) 를 주어진 이름으로 새 맵 row 생성 + blob 저장.")
+  @PostMapping("/maps/save-session")
+  public ApiDtos.MapMetadataResponse saveCurrentSession(
+      @RequestBody ApiDtos.SaveSessionRequest request) {
+    var map = mapService.createMapFromCurrentSession(request.name(), request.code());
+    return new ApiDtos.MapMetadataResponse(
+        map.getId(), map.getCode(), map.getName(), map.isActive(), map.getNav2YamlUrl());
+  }
+
   @Operation(summary = "List maps", description = "Returns all semantic map metadata entries.")
   @GetMapping("/maps")
   public List<ApiDtos.MapMetadataResponse> getMaps() {

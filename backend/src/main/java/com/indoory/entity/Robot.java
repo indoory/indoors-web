@@ -35,10 +35,12 @@ public class Robot extends BaseEntity {
   @Column(name = "battery_level", nullable = false)
   private Integer batteryLevel;
 
-  @Column(name = "map_id", nullable = false)
+  // null = "Unknown session" (시드 직후 / 사용자가 아직 맵 이름 안 정함).
+  // 사용자가 맵 저장하면 그 시점에 채워짐.
+  @Column(name = "map_id")
   private Long mapId;
 
-  @Column(name = "floor_id", nullable = false)
+  @Column(name = "floor_id")
   private Long floorId;
 
   @Column(name = "pose_x", nullable = false, precision = 10, scale = 2)

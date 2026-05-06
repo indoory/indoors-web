@@ -33,6 +33,10 @@ public final class ApiDtos {
 
   public record FloorSetRequest(Long floorId) {}
 
+  public record SaveSessionRequest(String name, String code) {}
+
+  public record LoadMapRequest(Long mapId) {}
+
   public record InitialPoseRequest(double x, double y, double yaw) {}
 
   public record DispatchCommandRequest(Long locationId) {}

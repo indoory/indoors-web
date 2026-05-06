@@ -247,6 +247,36 @@ public class RobotController {
     return adapterClient.lastPose();
   }
 
+  @Operation(
+      summary = "Load saved map",
+      description = "저장된 맵을 로봇 세션에 로드하고 robot.mapId 갱신. Unknown session 종료.")
+  @PostMapping("/{robotId}/load-map")
+  public Map<String, Object> loadMap(
+      @PathVariable Long robotId, @RequestBody ApiDtos.LoadMapRequest request) {
+    IndoorMap map =
+        mapRepository
+            .findById(request.mapId())
+            .orElseThrow(() -> new IllegalArgumentException("map not found"));
+    if (map.getRtabmapDbPath() == null) {
+      return Map.of("ok", false, "reason", "map has no saved blob");
+    }
+    try {
+      byte[] blob = java.nio.file.Files.readAllBytes(
+          java.nio.file.Paths.get(map.getRtabmapDbPath()));
+      adapterClient.setFloor(map.getCode(), blob);
+      // Robot 의 mapId 갱신해 더 이상 Unknown 아니게.
+      robotService.assignMapToRobot(robotId, map.getId());
+      return Map.of(
+          "ok", true,
+          "mode", "localization",
+          "mapId", map.getId(),
+          "mapName", map.getName(),
+          "blobBytes", blob.length);
+    } catch (java.io.IOException e) {
+      return Map.of("ok", false, "reason", "failed to read blob: " + e.getMessage());
+    }
+  }
+
   @Operation(summary = "Delete robot", description = "Deletes a robot.")
   @DeleteMapping("/{robotId}")
   public void deleteRobot(@PathVariable Long robotId, Authentication authentication) {

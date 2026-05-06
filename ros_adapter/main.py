@@ -43,6 +43,100 @@ FLOOR_DB_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title='Indoory ROS2 Adapter')
 
 
+# ── 영속 ROS 구독자: /odom 등을 백그라운드에서 캐시 ───────────────────
+# 이전엔 매 요청마다 `ros2 topic echo --once` subprocess 를 띄워서
+# DDS 핸드셰이크 폭주 → ROS2 daemon 부하 + 토픽 전반 느려짐.
+# 이제 한 번만 구독하고 메모리 캐시 → HTTP 는 cache read 만.
+import threading
+import time as _time
+
+_pose_cache: dict = {'available': False}
+_topics_cache: dict = {'topics': [], 'fetched_at': 0.0}
+_map_cache: dict = {'available': False}  # OccupancyGrid 메타 + 데이터
+_ros_node_thread: Optional[threading.Thread] = None
+
+
+def _start_ros_subscriber() -> None:
+    """별도 스레드에서 rclpy spin. /odom 구독해 latest 캐시."""
+    global _pose_cache
+    try:
+        import rclpy
+        from rclpy.node import Node
+        from nav_msgs.msg import Odometry, OccupancyGrid
+    except Exception as e:
+        log.warning('rclpy import failed — cache disabled: %s', e)
+        return
+
+    rclpy.init(args=None)
+    node = Node('indoory_adapter_telemetry')
+
+    def odom_cb(msg: Odometry) -> None:
+        global _pose_cache
+        p = msg.pose.pose
+        o = p.orientation
+        # quaternion → yaw (z-axis rotation)
+        import math
+        yaw = math.atan2(2 * (o.w * o.z + o.x * o.y),
+                         1 - 2 * (o.y * o.y + o.z * o.z))
+        _pose_cache = {
+            'available': True,
+            'x': p.position.x,
+            'y': p.position.y,
+            'z': p.position.z,
+            'yaw_rad': yaw,
+            'yaw_deg': math.degrees(yaw),
+            'frame': msg.header.frame_id,
+            'updated_at': _time.time(),
+        }
+
+    def map_cb(msg) -> None:
+        global _map_cache
+        _map_cache = {
+            'available': True,
+            'width': msg.info.width,
+            'height': msg.info.height,
+            'resolution': msg.info.resolution,
+            'origin_x': msg.info.origin.position.x,
+            'origin_y': msg.info.origin.position.y,
+            'data': list(msg.data),  # int8 배열 (-1 unknown, 0 free, 100 occupied)
+            'updated_at': _time.time(),
+        }
+
+    from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+    qos_odom = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=10,
+                          reliability=ReliabilityPolicy.RELIABLE)
+    qos_map = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
+                         reliability=ReliabilityPolicy.RELIABLE,
+                         durability=DurabilityPolicy.TRANSIENT_LOCAL)
+    node.create_subscription(Odometry, '/odom', odom_cb, qos_odom)
+    node.create_subscription(OccupancyGrid, '/map', map_cb, qos_map)
+    log.info('rclpy subscribers /odom + /map started (cached)')
+
+    try:
+        rclpy.spin(node)
+    except Exception as e:
+        log.warning('rclpy spin ended: %s', e)
+    finally:
+        node.destroy_node()
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
+
+
+def _ensure_subscriber() -> None:
+    global _ros_node_thread
+    if _ros_node_thread is None or not _ros_node_thread.is_alive():
+        _ros_node_thread = threading.Thread(
+            target=_start_ros_subscriber, daemon=True, name='ros-sub')
+        _ros_node_thread.start()
+
+
+@app.on_event('startup')
+def _on_startup() -> None:
+    _ensure_subscriber()
+
+
 def _ros_service_call(srv_name: str, srv_type: str, args: str = '{}') -> tuple[bool, str]:
     """`ros2 service call` subprocess wrapper. ROS env sourced."""
     cmd = (
@@ -228,18 +322,28 @@ def health():
 
 @app.get('/api/system/health')
 def system_health():
-    """관제·디버깅 콘솔용 종합 헬스. ROS·시뮬·어댑터·맵 DB 한 번에."""
+    """관제·디버깅 콘솔용 종합 헬스. ROS·시뮬·어댑터·맵 DB 한 번에.
+
+    ros2 topic list 호출은 비싸니 30초 캐시. /odom 등 라이브 토픽은 영속
+    구독자 캐시에서 'updated_at' 신선도로 판단.
+    """
     import shutil
-    # ROS 토픽 list (있는 토픽만)
-    ros_topics = []
-    try:
-        proc = subprocess.run(
-            ['bash', '-c',
-             f'source {ROS_SETUP} && source {WS_SETUP} && ros2 topic list 2>/dev/null'],
-            capture_output=True, text=True, timeout=5)
-        ros_topics = [t for t in proc.stdout.strip().split('\n') if t]
-    except Exception:
-        pass
+    # ROS 토픽 list 30초 캐시 (subprocess 호출 빈도 줄이기)
+    now = _time.time()
+    ros_topics = _topics_cache['topics']
+    if now - _topics_cache['fetched_at'] > 30:
+        try:
+            proc = subprocess.run(
+                ['bash', '-c',
+                 f'source {ROS_SETUP} && source {WS_SETUP} && ros2 topic list 2>/dev/null'],
+                capture_output=True, text=True, timeout=5)
+            fresh = [t for t in proc.stdout.strip().split('\n') if t]
+            if fresh:
+                _topics_cache['topics'] = fresh
+                _topics_cache['fetched_at'] = now
+                ros_topics = fresh
+        except Exception:
+            pass
 
     # 시뮬 PID (gzserver) 살아있는지
     sim_alive = False
@@ -284,27 +388,65 @@ def topic_hz(topic_name: str, samples: int = 10):
         return {'topic': topic_name, 'error': str(e)}
 
 
+@app.get('/api/system/map')
+def map_meta():
+    """OccupancyGrid 메타 (width/height/resolution/origin). 그리드 자체는 /map.png."""
+    _ensure_subscriber()
+    if not _map_cache.get('available'):
+        return {'available': False, 'reason': 'no /map message yet'}
+    age = _time.time() - _map_cache.get('updated_at', 0)
+    return {
+        'available': True,
+        'width': _map_cache['width'],
+        'height': _map_cache['height'],
+        'resolution': _map_cache['resolution'],
+        'origin_x': _map_cache['origin_x'],
+        'origin_y': _map_cache['origin_y'],
+        'age_seconds': round(age, 2),
+    }
+
+
+@app.get('/api/system/map.png')
+def map_png():
+    """OccupancyGrid 를 PNG 로 인코딩해 반환. 프론트가 <img> 로 표시."""
+    from fastapi.responses import Response
+    _ensure_subscriber()
+    if not _map_cache.get('available'):
+        return Response(status_code=204)
+    try:
+        from PIL import Image
+        import io
+        w, h = _map_cache['width'], _map_cache['height']
+        data = _map_cache['data']
+        # OccupancyGrid: -1=unknown(gray), 0=free(white), 100=occupied(black)
+        pixels = bytearray(w * h)
+        for i, v in enumerate(data):
+            if v < 0:
+                pixels[i] = 127  # unknown — gray
+            elif v < 50:
+                pixels[i] = 255  # free — white
+            else:
+                pixels[i] = 0    # occupied — black
+        # ROS OccupancyGrid 는 (0,0) 이 원점, row-major. PIL 은 top-left 가 (0,0)
+        # 이라 y축 flip 필요.
+        img = Image.frombytes('L', (w, h), bytes(pixels))
+        img = img.transpose(Image.FLIP_TOP_BOTTOM)
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return Response(content=buf.getvalue(), media_type='image/png')
+    except Exception as e:
+        return Response(content=str(e).encode(), status_code=500)
+
+
 @app.get('/api/system/last_pose')
 def last_pose():
-    """현재 /odom 의 마지막 pose 한 번 조회 (sim 상태 디버깅)."""
-    cmd = (
-        f'source {ROS_SETUP} && source {WS_SETUP} && '
-        'timeout 3 ros2 topic echo /odom --once 2>/dev/null | head -20'
-    )
-    try:
-        proc = subprocess.run(['bash', '-c', cmd], capture_output=True, text=True, timeout=6)
-        out = proc.stdout
-        if not out.strip():
-            return {'available': False}
-        # 간단히 x, y, yaw 만 파싱
-        import re
-        x = re.search(r'x:\s*(-?[\d.e+-]+)', out)
-        y = re.search(r'y:\s*(-?[\d.e+-]+)', out)
-        return {
-            'available': True,
-            'raw': out[:500],
-            'x': float(x.group(1)) if x else None,
-            'y': float(y.group(1)) if y else None,
-        }
-    except Exception as e:
-        return {'available': False, 'error': str(e)}
+    """영속 rclpy 구독자가 캐시한 /odom 의 마지막 pose. subprocess 호출 X."""
+    _ensure_subscriber()
+    if not _pose_cache.get('available'):
+        return {'available': False, 'reason': 'no /odom message yet'}
+    age = _time.time() - _pose_cache.get('updated_at', 0)
+    return {
+        **_pose_cache,
+        'age_seconds': round(age, 2),
+        'stale': age > 5,
+    }

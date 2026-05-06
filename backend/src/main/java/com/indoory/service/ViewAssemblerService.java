@@ -26,9 +26,9 @@ public class ViewAssemblerService {
         robot.getStatus().name(),
         !"OFFLINE".equals(robot.getStatus().name()),
         robot.getBatteryLevel(),
-        floor.getCode(),
-        map.getId(),
-        map.getName(),
+        floor == null ? null : floor.getCode(),
+        map == null ? null : map.getId(),
+        map == null ? null : map.getName(),
         activeTask == null ? null : activeTask.getId(),
         activeTask == null ? null : activeTask.getTaskCode(),
         robot.getUpdatedAt());
@@ -44,7 +44,11 @@ public class ViewAssemblerService {
 
   public ApiDtos.RobotPoseResponse toRobotPose(Robot robot, IndoorMap map, Floor floor) {
     return new ApiDtos.RobotPoseResponse(
-        robot.getPoseX(), robot.getPoseY(), robot.getYawDeg(), floor.getCode(), map.getId());
+        robot.getPoseX(),
+        robot.getPoseY(),
+        robot.getYawDeg(),
+        floor == null ? null : floor.getCode(),
+        map == null ? null : map.getId());
   }
 
   public ApiDtos.TaskSummaryResponse toTaskSummary(

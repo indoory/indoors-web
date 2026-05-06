@@ -42,8 +42,8 @@ public class RobotService {
         .map(
             robot -> {
               Task activeTask = taskService.findActiveTaskForRobot(robot.getId());
-              Floor floor = findFloor(robot.getFloorId());
-              IndoorMap map = findMap(robot.getMapId());
+              Floor floor = robot.getFloorId() == null ? null : findFloorOrNull(robot.getFloorId());
+              IndoorMap map = robot.getMapId() == null ? null : findMapOrNull(robot.getMapId());
               return viewAssemblerService.toRobotSummary(robot, activeTask, floor, map);
             })
         .toList();
@@ -53,8 +53,8 @@ public class RobotService {
   public ApiDtos.RobotDetailResponse getRobot(Long robotId) {
     Robot robot = findRobot(robotId);
     Task activeTask = taskService.findActiveTaskForRobot(robot.getId());
-    Floor floor = findFloor(robot.getFloorId());
-    IndoorMap map = findMap(robot.getMapId());
+    Floor floor = robot.getFloorId() == null ? null : findFloorOrNull(robot.getFloorId());
+    IndoorMap map = robot.getMapId() == null ? null : findMapOrNull(robot.getMapId());
 
     return new ApiDtos.RobotDetailResponse(
         viewAssemblerService.toRobotSummary(robot, activeTask, floor, map),
@@ -81,7 +81,9 @@ public class RobotService {
   public ApiDtos.RobotPoseResponse getRobotPose(Long robotId) {
     Robot robot = findRobot(robotId);
     return viewAssemblerService.toRobotPose(
-        robot, findMap(robot.getMapId()), findFloor(robot.getFloorId()));
+        robot,
+        robot.getMapId() == null ? null : findMapOrNull(robot.getMapId()),
+        robot.getFloorId() == null ? null : findFloorOrNull(robot.getFloorId()));
   }
 
   @Transactional(readOnly = true)
@@ -96,6 +98,22 @@ public class RobotService {
     return commandLogRepository.findAllByRobotIdOrderByCreatedAtDesc(robotId).stream()
         .map(viewAssemblerService::toCommandLog)
         .toList();
+  }
+
+  /** 사용자가 'Save Map' 또는 'Load Map' 후 robot.mapId 갱신. Unknown session 종료. */
+  @Transactional
+  public void assignMapToRobot(Long robotId, Long mapId) {
+    Robot robot = findRobot(robotId);
+    java.lang.reflect.Field f;
+    try {
+      f = Robot.class.getDeclaredField("mapId");
+      f.setAccessible(true);
+      f.set(robot, mapId);
+      robotRepository.save(robot);
+    } catch (Exception e) {
+      throw new ResponseStatusException(
+          HttpStatus.INTERNAL_SERVER_ERROR, "failed to assign mapId", e);
+    }
   }
 
   @Transactional
@@ -354,6 +372,15 @@ public class RobotService {
     return mapRepository
         .findById(id)
         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Map not found"));
+  }
+
+  /** "Unknown session" 안전 — id 가 NULL/없는 경우 예외 안 던지고 null 반환. */
+  private Floor findFloorOrNull(Long id) {
+    return id == null ? null : floorRepository.findById(id).orElse(null);
+  }
+
+  private IndoorMap findMapOrNull(Long id) {
+    return id == null ? null : mapRepository.findById(id).orElse(null);
   }
 
   private Location findLocation(Long id) {

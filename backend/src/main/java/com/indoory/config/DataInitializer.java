@@ -2,12 +2,8 @@ package com.indoory.config;
 
 import com.indoory.entity.Enum.OperatorRole;
 import com.indoory.entity.Enum.RobotStatus;
-import com.indoory.entity.Floor;
-import com.indoory.entity.IndoorMap;
 import com.indoory.entity.Operator;
 import com.indoory.entity.Robot;
-import com.indoory.repository.FloorRepository;
-import com.indoory.repository.MapRepository;
 import com.indoory.repository.OperatorRepository;
 import com.indoory.repository.RobotRepository;
 import java.math.BigDecimal;
@@ -16,29 +12,27 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
 
 /**
- * 첫 부팅 시 멀티세션 SLAM 시연용 최소 데이터 시드.
+ * 첫 부팅 시 최소 시드. 운영자 + 로봇 1대 만 생성.
  *
- * <p>운영자 1, 맵 1 (active), 층 2 (office/hospital — elevator_teleport.py
- * BUILDINGS 와 코드 일치), 로봇 1. 어댑터의 ADAPTER_ROBOT_ID="robot-1" 은
- * Spring 의 Long id 와 무관한 식별자이므로 UI 가 robot.id=1 을 선택해도 어댑터
- * 호출은 항상 "robot-1" 슬러그로 변환된다.
+ * <p>맵·층 은 의도적으로 시드 X — 시드된 가짜 맵 이 실제 SLAM 한 적 없는데도
+ * "Building 1 / Office floor" 라고 거짓말하던 문제 회피. 사용자가 SLAM 후
+ * 명시적으로 'Save Map' 으로 이름 붙여 저장할 때만 maps 테이블 row 생김.
+ *
+ * <p>로봇은 mapId/floorId NULL 로 시작 = "Unknown session". 사용자가 맵
+ * 식별·저장하면 그 시점에 채워짐. 세션 종료 후 unknown 그대로 두면
+ * ~/.ros/rtabmap.db 만 남고 DB 메타는 깨끗.
  */
 @Component
 @RequiredArgsConstructor
 public class DataInitializer implements CommandLineRunner {
 
   private final OperatorRepository operatorRepository;
-  private final MapRepository mapRepository;
-  private final FloorRepository floorRepository;
   private final RobotRepository robotRepository;
 
   @Override
   public void run(String... args) {
     seedOperator();
-    Long mapId = seedMap();
-    Long officeFloorId = seedFloor(mapId, "office", "Office", 0);
-    seedFloor(mapId, "hospital", "Hospital", 1);
-    seedRobot(mapId, officeFloorId);
+    seedRobot();
   }
 
   private void seedOperator() {
@@ -47,27 +41,7 @@ public class DataInitializer implements CommandLineRunner {
         new Operator("admin@indoory.io", "password123", "Admin", OperatorRole.ADMIN));
   }
 
-  private Long seedMap() {
-    return mapRepository
-        .findFirstByActiveTrue()
-        .map(IndoorMap::getId)
-        .orElseGet(
-            () -> {
-              IndoorMap map = new IndoorMap("building1", "Building 1");
-              map.activate();
-              return mapRepository.save(map).getId();
-            });
-  }
-
-  private Long seedFloor(Long mapId, String code, String name, int orderIndex) {
-    return floorRepository.findAllByMapIdOrderByOrderIndexAsc(mapId).stream()
-        .filter(f -> code.equals(f.getCode()))
-        .findFirst()
-        .map(Floor::getId)
-        .orElseGet(() -> floorRepository.save(new Floor(mapId, code, name, orderIndex)).getId());
-  }
-
-  private void seedRobot(Long mapId, Long floorId) {
+  private void seedRobot() {
     if (robotRepository.count() > 0) return;
     Robot robot =
         Robot.builder()
@@ -75,10 +49,10 @@ public class DataInitializer implements CommandLineRunner {
             .label("Robot 1")
             .status(RobotStatus.IDLE)
             .batteryLevel(100)
-            .mapId(mapId)
-            .floorId(floorId)
-            .poseX(BigDecimal.valueOf(-3.00))
-            .poseY(BigDecimal.valueOf(0.00))
+            .mapId(null)   // Unknown session
+            .floorId(null)
+            .poseX(BigDecimal.ZERO)
+            .poseY(BigDecimal.ZERO)
             .yawDeg(BigDecimal.ZERO)
             .build();
     robotRepository.save(robot);

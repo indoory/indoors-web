@@ -274,8 +274,64 @@ export function getSystemHealth(robotId: number | string) {
 }
 
 export function getLivePose(robotId: number | string) {
-  return request<{ available: boolean; x?: number | null; y?: number | null; raw?: string; error?: string }>(
-    `/api/robots/${robotId}/system/pose`,
+  return request<{
+    available: boolean
+    x?: number | null
+    y?: number | null
+    z?: number | null
+    yaw_rad?: number | null
+    yaw_deg?: number | null
+    age_seconds?: number
+    stale?: boolean
+    raw?: string
+    error?: string
+  }>(`/api/robots/${robotId}/system/pose`)
+}
+
+export interface MapMeta {
+  available: boolean
+  width?: number
+  height?: number
+  resolution?: number
+  origin_x?: number
+  origin_y?: number
+  age_seconds?: number
+  reason?: string
+}
+
+export function getMapMeta() {
+  return request<MapMeta>('/api/system/map')
+}
+
+// 맵 PNG URL — <img src=...> 로 직접 사용
+export const MAP_PNG_URL = '/api/system/map.png'
+
+// 새 SLAM 세션을 이름 붙여 저장 (Unknown → 명명된 맵)
+export function saveCurrentSession(payload: { name: string; code?: string }) {
+  return request<{ id: number; code: string; name: string }>(`/api/maps/save-session`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+// 저장된 맵 로드 (Unknown 종료, robot.mapId 갱신)
+export function loadSavedMap(robotId: number | string, mapId: number) {
+  return request<{
+    ok: boolean
+    mode?: string
+    mapId?: number
+    mapName?: string
+    blobBytes?: number
+    reason?: string
+  }>(`/api/robots/${robotId}/load-map`, {
+    method: 'POST',
+    body: JSON.stringify({ mapId }),
+  })
+}
+
+export function listMaps() {
+  return request<Array<{ id: number; code: string; name: string; active: boolean }>>(
+    '/api/maps',
   )
 }
 

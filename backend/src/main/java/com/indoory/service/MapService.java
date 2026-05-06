@@ -115,6 +115,34 @@ public class MapService {
     return viewAssemblerService.toMapMetadata(map);
   }
 
+  /**
+   * "Unknown session" 의 현재 rtabmap.db 를 새 맵으로 저장.
+   *
+   * <p>사용자가 SLAM 한 뒤 "이게 X층이야" 라고 이름 붙이는 시점에 호출. 새 IndoorMap row
+   * 만들고 디스크의 ~/.ros/rtabmap.db 를 /var/indoory/maps/{id}.db 로 복사. 호출자가
+   * 받은 mapId 로 robot.mapId 갱신하면 더 이상 Unknown 이 아님.
+   */
+  @Transactional
+  public IndoorMap createMapFromCurrentSession(String name, String code) {
+    String resolvedCode = (code == null || code.isBlank())
+        ? "map-" + System.currentTimeMillis() : code;
+    IndoorMap map = new IndoorMap(resolvedCode, name);
+    mapRepository.save(map);
+    Path live = Paths.get(System.getProperty("user.home"), ".ros", "rtabmap.db");
+    if (Files.exists(live)) {
+      try {
+        if (!Files.exists(STORAGE_DIR)) Files.createDirectories(STORAGE_DIR);
+        Path target = STORAGE_DIR.resolve(map.getId() + ".db");
+        Files.copy(live, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        map.recordRtabmapDb(target.toString(), Files.size(target));
+        mapRepository.save(map);
+      } catch (IOException e) {
+        // 메타는 만들고 blob 은 비워둠. 이후 수동 save 로 채울 수 있음.
+      }
+    }
+    return map;
+  }
+
   // ── RTAB-Map .db (파일시스템 저장) ────────────────────────────────────
   // PostgreSQL bytea 1GB 한계 회피. DB 에는 path/size/timestamp 만, 실제 blob 은
   // /var/indoory/maps/{id}.db 로 저장.
