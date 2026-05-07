@@ -272,6 +272,52 @@ export interface SystemHealth {
   floor_db_dir?: string
 }
 
+// 텔레옵 디바이스 (xlerobot 모터 버스 / serial leader): 포트 enumerate + connect/disconnect.
+// 어댑터 직접 호출 — auth 불필요 (vite /api/system 프록시).
+export interface SerialPortInfo {
+  device: string
+  description: string
+  hwid: string
+  manufacturer: string
+  product: string
+}
+
+export async function listTeleopPorts(): Promise<SerialPortInfo[]> {
+  const r = await fetch('/api/system/teleop/ports')
+  if (!r.ok) throw new ApiError(await r.text(), r.status)
+  const j = (await r.json()) as { ports: SerialPortInfo[] }
+  return j.ports
+}
+
+export async function connectTeleopDevice(port: string, baudrate = 1_000_000) {
+  const r = await fetch('/api/system/teleop/connect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ port, baudrate }),
+  })
+  if (!r.ok) throw new ApiError(await r.text(), r.status)
+  return r.json() as Promise<{ ok: boolean; connected: boolean; port: string; baudrate: number }>
+}
+
+export async function disconnectTeleopDevice() {
+  const r = await fetch('/api/system/teleop/disconnect', { method: 'POST' })
+  if (!r.ok) throw new ApiError(await r.text(), r.status)
+  return r.json() as Promise<{ ok: boolean; connected: boolean }>
+}
+
+export interface TeleopDeviceStatus {
+  connected: boolean
+  port: string | null
+  baudrate: number | null
+  error: string | null
+}
+
+export async function getTeleopDeviceStatus(): Promise<TeleopDeviceStatus> {
+  const r = await fetch('/api/system/teleop/status')
+  if (!r.ok) throw new ApiError(await r.text(), r.status)
+  return r.json()
+}
+
 // 텔레옵: linear m/s, angular rad/s. 어댑터 직접 호출 (vite /api/system 프록시).
 export async function teleop(linear: number, angular: number) {
   // request() 가 /api 경로를 spring(8080) 으로 보내지 않고, vite proxy 가
@@ -285,6 +331,19 @@ export async function teleop(linear: number, angular: number) {
 
 export function getSystemHealth(robotId: number | string) {
   return request<SystemHealth>(`/api/robots/${robotId}/system/health`)
+}
+
+// Semantic OCR: 세션 시작 시 1회 호출. floorCode 가 ''이면 OCR floor 필터 off.
+// vite proxy 룰: /api/system/* → adapter:8000. 다른 /api/* 는 Spring:8080 으로
+// 빠져 404 가 됨. 그래서 system prefix 필수.
+export async function setOcrFloor(floorCode: string, mode: 'reject' | 'complete' = 'reject') {
+  const r = await fetch('/api/system/semantic_ocr/floor', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ floorCode, mode }),
+  })
+  if (!r.ok) throw new ApiError(await r.text(), r.status)
+  return r.json() as Promise<{ ok: boolean; floorCode: string; mode: string }>
 }
 
 export function getLivePose(robotId: number | string) {

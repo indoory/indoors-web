@@ -19,4 +19,6 @@ set +u
 source /opt/ros/humble/setup.bash
 source /root/gz-nav-sim/install/setup.bash
 set -u
-exec ./venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+# --reload 제거: WS 핸들러가 background task 로 hang → reload 시 무한대기 + adapter
+# 죽음. 코드 변경 시 수동 pkill 후 supervisor 가 재기동하는 흐름이 더 안정적.
+exec ./venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000

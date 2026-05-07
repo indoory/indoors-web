@@ -269,6 +269,24 @@ public class RobotService {
   @Transactional
   public void resume(Long robotId, SessionOperator operator) {
     Robot robot = findRobot(robotId);
+
+    // ESTOP 해제 — 활성 task 없어도 그냥 IDLE 로 되돌림. 한 번 EMERGENCY_STOP 이면
+    // resume 시 무조건 reset (sticky 막음). adapter 도 풀어줌 (cmd_vel 0,0 잠시).
+    if (robot.getStatus() == com.indoory.entity.Enum.RobotStatus.EMERGENCY_STOP) {
+      robot.markIdle();
+      robotRepository.save(robot);
+      activityService.recordCommand(
+          robot.getId(), null,
+          CommandType.RESUME, "estop-clear",
+          CommandExecutionStatus.DONE, operator.email());
+      activityService.recordEvent(
+          robot.getId(), null,
+          EventSeverity.INFO, "ROBOT",
+          "Emergency stop cleared by " + operator.email());
+      adapterClient.resume();
+      return;
+    }
+
     Task task = taskService.findActiveTaskForRobot(robot.getId());
     if (task == null || task.getStatus() != TaskStatus.PAUSED) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, "No paused task to resume");
@@ -304,13 +322,20 @@ public class RobotService {
     Task task = taskService.findActiveTaskForRobot(robot.getId());
     LocalDateTime now = LocalDateTime.now();
 
-    robot.emergencyStop("Emergency stop engaged");
-    robotRepository.save(robot);
+    // 1) adapter 에 cancel_event 호출 — SLAM/explore/spin 종료 + cmd_vel (0,0) burst.
+    //    실제 모션이 즉시 멈춤.
+    adapterClient.emergencyStop();
 
+    // 2) 진행 중 task 가 있으면 fail 처리.
     if (task != null) {
       taskService.fail(task, "Emergency stop engaged by operator", now);
       taskRepository.save(task);
     }
+
+    // 3) robot 상태는 IDLE 로 복귀 — sticky EMERGENCY_STOP 막음.
+    //    멈춘 후 다시 명령 받을 준비된 상태가 자연스러움.
+    robot.markIdle();
+    robotRepository.save(robot);
 
     activityService.recordCommand(
         robot.getId(),
@@ -325,8 +350,6 @@ public class RobotService {
         EventSeverity.ERROR,
         "COMMAND",
         "Emergency stop triggered for " + robot.getLabel() + " by " + operator.email());
-
-    adapterClient.emergencyStop();
   }
 
   @Transactional

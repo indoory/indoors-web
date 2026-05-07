@@ -69,10 +69,11 @@ public class RobotAdapterClient {
     post("/api/robots/" + ADAPTER_ROBOT_ID + "/commands/resume", null);
   }
 
-  /** Forwards an emergency-stop command to the adapter. */
+  /** ESTOP — adapter 의 cancel_event 사용 (SLAM/explore/spin 종료 + cmd_vel (0,0) burst).
+   * 별도 /commands/emergency-stop 라우트 없어도 cancel_event 가 등가 효과. */
   public void emergencyStop() {
     if (!properties.isEnabled()) return;
-    post("/api/robots/" + ADAPTER_ROBOT_ID + "/commands/emergency-stop", null);
+    post("/api/system/cancel_event", null);
   }
 
   // ── SLAM ─────────────────────────────────────────────────────────────────

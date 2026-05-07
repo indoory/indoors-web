@@ -1,16 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ChevronDown, ChevronRight,
-  Crosshair, RotateCcw, Send, Square,
+  Crosshair, Plug, RefreshCw, RotateCcw, Send, Square, Unplug,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppShell } from '../components/AppShell'
+import { FloorPromptModal } from '../components/FloorPromptModal'
 import { LoadingView } from '../components/LoadingView'
 import {
+  connectTeleopDevice, disconnectTeleopDevice,
   emergencyStopRobot, getLivePose, getMapMeta,
-  getRobots, getSystemHealth, listMaps, loadSavedMap,
-  pauseRobot, relocalizeRobot, renameMap, resumeRobot, startSlamExplore,
-  stopSlam, teleop, type SystemHealth,
+  getRobots, getSystemHealth, getTeleopDeviceStatus, listMaps, listTeleopPorts,
+  loadSavedMap, pauseRobot, relocalizeRobot, renameMap, resumeRobot,
+  setOcrFloor,
+  startSlamExplore, stopSlam, teleop, type SystemHealth,
 } from '../lib/api'
 
 type LivePose = Awaited<ReturnType<typeof getLivePose>>
@@ -79,6 +82,7 @@ export function RobotsPage() {
   const [dockOpen, setDockOpen] = useState(true)
   const [actionLog, setActionLog] = useState<string[]>([])
   const [actionMode, setActionMode] = useState<ActionMode>('idle')
+  const [viewRotation, setViewRotation] = useState(0)  // 맵 캔버스 회전 (radians) — WASD 방향 변환용
   const [goalPreview, setGoalPreview] = useState<{ x: number; y: number } | null>(null)
   const log = useCallback((m: string) =>
     setActionLog((p) => [`${new Date().toLocaleTimeString()} ${m}`, ...p].slice(0, 50)), [])
@@ -105,7 +109,8 @@ export function RobotsPage() {
     queryKey: ['system-health', robotId],
     queryFn: () => (robotId ? getSystemHealth(robotId) : Promise.resolve({} as SystemHealth)),
     enabled: !!robotId,
-    refetchInterval: 5000,
+    // 1.5초마다 — slam/explore active 상태가 stop 직후 빠르게 idle 로 반영되게.
+    refetchInterval: 1500,
   })
   // pose 는 /ws/pose WebSocket 으로 ~50Hz push 받음 (HTTP 1Hz 폴링 제거).
   const { pose, connected: poseConnected } = useLivePose()
@@ -114,6 +119,29 @@ export function RobotsPage() {
     queryFn: getMapMeta,
     refetchInterval: 3000,
   })
+
+  // ROS 세션 watcher: poseConnected false→true 가 새 세션 시작.
+  // robot.floorCode 가 채워져 있으면 자동 적용, 없으면 모달.
+  // 끊겼다 다시 연결되면 askedThisSession 가 리셋되어 다시 묻는다.
+  const [showFloorModal, setShowFloorModal] = useState(false)
+  const [askedThisSession, setAskedThisSession] = useState(false)
+  const lastConnectedRef = useRef(false)
+  useEffect(() => {
+    const wasConnected = lastConnectedRef.current
+    lastConnectedRef.current = poseConnected
+    if (wasConnected || !poseConnected) {
+      if (!poseConnected) setAskedThisSession(false)
+      return
+    }
+    // false → true 트랜지션
+    if (askedThisSession) return
+    if (robot?.floorCode) {
+      setOcrFloor(robot.floorCode).catch(() => { /* 무시: param 서버 미준비 등 */ })
+      setAskedThisSession(true)
+    } else {
+      setShowFloorModal(true)
+    }
+  }, [poseConnected, robot?.floorCode, askedThisSession])
 
   const refresh = () => queryClient.invalidateQueries({ predicate: () => true })
 
@@ -164,81 +192,139 @@ export function RobotsPage() {
     onSuccess: (_d, a) => { log(a); refresh() },
   })
 
-  // 텔레옵 publish 인터벌 + healthQuery 참조 (정지 시 SLAM 활성 여부 확인).
+  // 텔레옵 — WebSocket 기반. 어댑터 watchdog (300ms 무신호 시 자동 (0,0,0)) 으로 연결
+  // 끊김/패킷 drop 시 robot 무한이동 방지.
+  // holonomic 명령: lin (robot frame x +전진), ang (z +CCW), lat (y +좌측 평행이동).
+  const teleopWsRef = useRef<WebSocket | null>(null)
   const teleopIntervalRef = useRef<number | null>(null)
-  const stopBurstRef = useRef<number | null>(null)
-  // 최신 health 를 stopTeleop 에서 참조하기 위한 ref. 콜백이 stale 안 되게.
-  const slamActiveRef = useRef(false)
-  useEffect(() => { slamActiveRef.current = !!(healthQuery.data?.slam_active || healthQuery.data?.explore_active) },
-            [healthQuery.data])
+  const teleopCmdRef = useRef<{ lin: number; ang: number; lat: number }>({ lin: 0, ang: 0, lat: 0 })
 
-  // 정지: 안전하게 (0,0) 을 짧게 burst 로 보내 simulator/velocity_smoother 가 확실히 받게.
-  // SLAM/explore 활성 시: explore 가 ~5-10Hz 로 cmd_vel publish 중이라 우리의 (0,0) 은
-  // 곧 덮어쓰여 SLAM 이 자연 재개 → 사실상 "사용자가 손 떼면 SLAM 다시 진행".
-  // SLAM 비활성 시: 아무도 cmd_vel 안 쓰니 (0,0) 이 마지막 값으로 남아 robot 정지.
+  // WS 연결 — 조작 탭 활성 시 단 한 번. 끊기면 자동 재연결.
+  useEffect(() => {
+    if (activeTab !== 'action' || !dockOpen) return
+    const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/teleop`
+    let stopped = false
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    const connect = () => {
+      if (stopped) return
+      const ws = new WebSocket(url)
+      teleopWsRef.current = ws
+      ws.onclose = () => {
+        teleopWsRef.current = null
+        if (!stopped) reconnectTimer = setTimeout(connect, 1000)
+      }
+      ws.onerror = () => { /* close 가 이어서 호출됨 */ }
+    }
+    connect()
+    return () => {
+      stopped = true
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      const ws = teleopWsRef.current
+      if (ws) {
+        try { ws.send(JSON.stringify({ linear: 0, angular: 0, lateral: 0 })); ws.close() } catch {}
+      }
+      teleopWsRef.current = null
+    }
+  }, [activeTab, dockOpen])
+
+  const sendTeleopCmd = (lin: number, ang: number, lat: number) => {
+    const ws = teleopWsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(JSON.stringify({ linear: lin, angular: ang, lateral: lat })) } catch {}
+    } else {
+      // WS 미연결 (재연결 중) → HTTP fallback 1회. (드물게 발생, lateral 손실 감수)
+      teleop(lin, ang).catch(() => {})
+    }
+  }
+
   const stopTeleop = useCallback(() => {
     if (teleopIntervalRef.current != null) {
       clearInterval(teleopIntervalRef.current)
       teleopIntervalRef.current = null
     }
-    if (stopBurstRef.current != null) clearInterval(stopBurstRef.current)
-    let n = 0
-    const burst = () => {
-      teleop(0, 0).catch(() => {})
-      n += 1
-      // SLAM 안 도는 중이면 5번까지 (~500ms) 보내 packet drop 대비.
-      // SLAM 도는 중이면 1번이면 충분 — explore 가 즉시 재개.
-      const limit = slamActiveRef.current ? 1 : 5
-      if (n >= limit) {
-        if (stopBurstRef.current != null) clearInterval(stopBurstRef.current)
-        stopBurstRef.current = null
-      }
-    }
-    burst()
-    if (!slamActiveRef.current) {
-      stopBurstRef.current = window.setInterval(burst, 100) as unknown as number
-    }
+    teleopCmdRef.current = { lin: 0, ang: 0, lat: 0 }
+    sendTeleopCmd(0, 0, 0)
   }, [])
-  const startTeleop = useCallback((linear: number, angular: number) => {
-    // 새 명령 시작 → 진행 중인 정지 burst 취소
-    if (stopBurstRef.current != null) { clearInterval(stopBurstRef.current); stopBurstRef.current = null }
-    if (teleopIntervalRef.current != null) clearInterval(teleopIntervalRef.current)
-    teleop(linear, angular).catch(() => {})
+
+  const startTeleop = useCallback((linear: number, angular: number, lateral: number) => {
+    teleopCmdRef.current = { lin: linear, ang: angular, lat: lateral }
+    sendTeleopCmd(linear, angular, lateral)
+    if (teleopIntervalRef.current != null) return  // 이미 keep-alive 돌고 있음
+    // 어댑터 watchdog 이 300ms 안에 새 메시지 요구 → 100ms 마다 같은 cmd 보내 keep-alive.
     teleopIntervalRef.current = window.setInterval(() => {
-      teleop(linear, angular).catch(() => {})
+      const c = teleopCmdRef.current
+      if (c.lin === 0 && c.ang === 0 && c.lat === 0) {
+        // 정지 상태면 더 보낼 필요 없음 → interval 정리
+        if (teleopIntervalRef.current != null) {
+          clearInterval(teleopIntervalRef.current)
+          teleopIntervalRef.current = null
+        }
+        return
+      }
+      sendTeleopCmd(c.lin, c.ang, c.lat)
     }, 100) as unknown as number
   }, [])
 
-  // WASD: 조작 탭 활성 + 도크 열림 시 (액션 모드 무관 — 수동 백업).
-  // e.code 사용 — 한글/영어 자판 무관 (물리적 키 위치 기반).
-  // window blur (alt-tab 등) 시 모든 키 release 처리 → "키가 눌린 채 떠있어 robot 무한 이동"
-  // 방지.
+  // WASD 핸들러 안에서 최신 pose/viewRotation 참조 위해 ref. 매번 effect 재등록 안 하게.
+  const poseRef = useRef(pose)
+  const viewRotRef = useRef(viewRotation)
+  useEffect(() => { poseRef.current = pose }, [pose])
+  useEffect(() => { viewRotRef.current = viewRotation }, [viewRotation])
+
+  // 키 상태 — 키보드 + UI 버튼 공유. apply() 가 매 변경마다 실행해서 startTeleop.
+  const pressedRef = useRef<Set<string>>(new Set())
+  const applyTeleopRef = useRef(() => {})
+  // 속도 조절: 사용자가 슬라이더로 변경 가능. ref 로도 잡아둬서 useEffect 의 apply()
+  // 안에서 항상 최신 값 사용 (state closure 캡처 회피).
+  const [linSpeed, setLinSpeed] = useState(3.0)   // m/s, 슬라이더 1~10
+  const [angSpeed, setAngSpeed] = useState(3.0)   // rad/s, 슬라이더 1~10
+  const linSpeedRef = useRef(linSpeed)
+  const angSpeedRef = useRef(angSpeed)
+  useEffect(() => { linSpeedRef.current = linSpeed }, [linSpeed])
+  useEffect(() => { angSpeedRef.current = angSpeed }, [angSpeed])
+  const pressKey = useCallback((k: 'w'|'a'|'s'|'d'|'q'|'r', down: boolean) => {
+    if (down) pressedRef.current.add(k); else pressedRef.current.delete(k)
+    applyTeleopRef.current()
+  }, [])
+
+  // 키 매핑 — 조작 탭 활성 시. e.code 사용 (한글/영어 자판 무관).
+  //   W/S = 전진/후진 (linear.x)
+  //   A/D = 좌/우 strafe (linear.y, holonomic 베이스만 의미)
+  //   Q/R = 좌/우 회전 (angular.z, CCW/CW)
+  // 속도는 슬라이더 (linSpeed / angSpeed) 로 실시간 조절.
   useEffect(() => {
     if (activeTab !== 'action' || !dockOpen) return
     const isText = (el: EventTarget | null) =>
       el instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)
     const CODE_TO_KEY: Record<string, string> = {
-      KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd',
+      KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd', KeyQ: 'q', KeyR: 'r',
     }
-    const LIN = 0.4, ANG = 0.8
-    const pressed = new Set<string>()
     const apply = () => {
+      const pressed = pressedRef.current
       if (pressed.size === 0) { stopTeleop(); return }
-      const lin = (pressed.has('w') ? LIN : 0) + (pressed.has('s') ? -LIN : 0)
-      const ang = (pressed.has('a') ? ANG : 0) + (pressed.has('d') ? -ANG : 0)
-      startTeleop(lin, ang)
+      const LIN = linSpeedRef.current
+      const ANG = angSpeedRef.current
+      let lin = 0, lat = 0, ang = 0
+      if (pressed.has('w')) lin += LIN
+      if (pressed.has('s')) lin -= LIN
+      if (pressed.has('a')) lat += LIN   // 왼쪽 strafe
+      if (pressed.has('d')) lat -= LIN   // 오른쪽 strafe
+      if (pressed.has('q')) ang += ANG   // 좌회전 (CCW)
+      if (pressed.has('r')) ang -= ANG   // 우회전 (CW)
+      // (linear, angular, lateral)
+      startTeleop(lin, ang, lat)
     }
+    applyTeleopRef.current = apply
     const onKey = (e: KeyboardEvent, down: boolean) => {
       if (isText(e.target)) return
       const k = CODE_TO_KEY[e.code]
       if (!k) return
       e.preventDefault()
-      if (down) pressed.add(k); else pressed.delete(k)
-      apply()
+      pressKey(k as 'w'|'a'|'s'|'d'|'q'|'r', down)
     }
     const dn = (e: KeyboardEvent) => onKey(e, true)
     const up = (e: KeyboardEvent) => onKey(e, false)
-    const onBlur = () => { pressed.clear(); stopTeleop() }
+    const onBlur = () => { pressedRef.current.clear(); stopTeleop() }
     window.addEventListener('keydown', dn)
     window.addEventListener('keyup', up)
     window.addEventListener('blur', onBlur)
@@ -246,10 +332,21 @@ export function RobotsPage() {
       window.removeEventListener('keydown', dn)
       window.removeEventListener('keyup', up)
       window.removeEventListener('blur', onBlur)
-      pressed.clear()
+      pressedRef.current.clear()
       stopTeleop()
     }
   }, [activeTab, dockOpen, startTeleop, stopTeleop])
+
+  // 진행 중 이벤트 강제 정지: reloc spin 프로세스 + Nav2 goal cancel + cmd_vel (0,0).
+  // useCallback 은 early return 뒤에 두면 hook 순서 어긋남 → 모든 useEffect/useCallback
+  // 은 early return 이전에 위치해야 함 (Rules of Hooks).
+  const cancelEvent = useCallback(() => {
+    fetch('/api/system/cancel_event', { method: 'POST' })
+      .then(() => log('event canceled'))
+      .catch(() => log('cancel fail'))
+    setActionMode('idle')
+    setGoalPreview(null)
+  }, [log])
 
   if (robotsQuery.isLoading) {
     return <AppShell title="Robot Console" subtitle=""><LoadingView label="" /></AppShell>
@@ -291,15 +388,6 @@ export function RobotsPage() {
   }
   const cancelGoto = () => { setActionMode('idle'); setGoalPreview(null) }
 
-  // 진행 중 이벤트 강제 정지: reloc spin 프로세스 + Nav2 goal cancel + cmd_vel (0,0).
-  const cancelEvent = useCallback(() => {
-    fetch('/api/system/cancel_event', { method: 'POST' })
-      .then(() => log('event canceled'))
-      .catch(() => log('cancel fail'))
-    setActionMode('idle')
-    setGoalPreview(null)
-  }, [log])
-
   return (
     <AppShell title={robot.label} subtitle="">
       <div className="-m-6 flex h-[calc(100vh-3.5rem)] flex-col bg-slate-100 text-slate-800">
@@ -338,6 +426,8 @@ export function RobotsPage() {
                 goalPreview={goalPreview}
                 onMapClickWorld={onMapClickWorld}
                 eventIdle={actionMode === 'idle'}
+                rotation={viewRotation}
+                setRotation={setViewRotation}
               />
             </div>
             {dockOpen && (
@@ -372,8 +462,12 @@ export function RobotsPage() {
                   onSlamStart={() => exploreMut.mutate()}
                   onSlamStop={() => slamStopMut.mutate()}
                   onCancelEvent={cancelEvent}
-                  startTeleop={startTeleop}
+                  pressKey={pressKey}
                   stopTeleop={stopTeleop}
+                  linSpeed={linSpeed}
+                  angSpeed={angSpeed}
+                  setLinSpeed={setLinSpeed}
+                  setAngSpeed={setAngSpeed}
                 />
               )}
               {activeTab === 'log' && <LogPanel log={actionLog} />}
@@ -452,6 +546,11 @@ export function RobotsPage() {
           </span>
         </div>
       </div>
+      {showFloorModal ? (
+        <FloorPromptModal
+          onClose={() => { setShowFloorModal(false); setAskedThisSession(true) }}
+        />
+      ) : null}
     </AppShell>
   )
 }
@@ -757,7 +856,8 @@ function ActionPanel({
   mode, goalPreview, exploreActive, relocPending,
   onArmGoto, onPublishGoto, onCancelGoto,
   onReloc, onSlamStart, onSlamStop, onCancelEvent,
-  startTeleop, stopTeleop,
+  pressKey, stopTeleop,
+  linSpeed, angSpeed, setLinSpeed, setAngSpeed,
 }: {
   mode: ActionMode
   goalPreview: { x: number; y: number } | null
@@ -770,15 +870,19 @@ function ActionPanel({
   onSlamStart: () => void
   onSlamStop: () => void
   onCancelEvent: () => void
-  startTeleop: (l: number, a: number) => void
+  pressKey: (k: 'w'|'a'|'s'|'d'|'q'|'r', down: boolean) => void
   stopTeleop: () => void
+  linSpeed: number
+  angSpeed: number
+  setLinSpeed: (v: number) => void
+  setAngSpeed: (v: number) => void
 }) {
   const slamRunning = mode === 'slam' || exploreActive
   const relocRunning = mode === 'reloc' || relocPending
   const gotoArmed = mode === 'goto-arming' || mode === 'goto-placed'
   const gotoRunning = mode === 'goto-running'
   return (
-    <PanelGrid cols={2}>
+    <PanelGrid cols={3}>
       <Subpanel title="이벤트 발행">
         <div className="flex flex-col gap-2">
         <ActionRow
@@ -841,7 +945,7 @@ function ActionPanel({
 
         <ActionRow
           icon={<Send className="h-4 w-4" />}
-          label="SLAM 자율탐사"
+          label="자율 탐사"
           accent="emerald"
           active={slamRunning}
           disabled={mode !== 'idle' && !slamRunning}
@@ -860,15 +964,168 @@ function ActionPanel({
         </div>
       </Subpanel>
 
-      <Subpanel title="수동 조작 (WASD)">
+      <Subpanel title="수동 조작 (WASD + QR)">
         <div className="flex flex-col items-start gap-2">
-          <ManualTeleop startTeleop={startTeleop} stopTeleop={stopTeleop} />
+          <ManualTeleop
+            pressKey={pressKey}
+            stopTeleop={stopTeleop}
+            linSpeed={linSpeed}
+            angSpeed={angSpeed}
+            setLinSpeed={setLinSpeed}
+            setAngSpeed={setAngSpeed}
+          />
           <p className="text-xs leading-snug text-slate-500">
-            키보드 W/A/S/D 또는 마우스 hold = 이동 · release = 정지
+            W/S = 전진/후진 · A/D = 좌/우 strafe · Q/R = 좌/우 회전<br/>
+            <span className="text-slate-400">키 release = 정지. 슬라이더로 속도 조절.</span>
           </p>
         </div>
       </Subpanel>
+
+      <Subpanel title="텔레옵 디바이스 (포트 연결)">
+        <TeleopDeviceConnector />
+      </Subpanel>
     </PanelGrid>
+  )
+}
+
+// xlerobot 모터 버스 / so101 leader / serial 입력 디바이스를 어댑터에 연결.
+// 어댑터는 직렬 포트 open/close 만 담당 — 디바이스 프로토콜 → cmd_vel 브리지는 별도 단계.
+function TeleopDeviceConnector() {
+  const queryClient = useQueryClient()
+  const portsQuery = useQuery({
+    queryKey: ['teleop-ports'],
+    queryFn: listTeleopPorts,
+    refetchInterval: 5000,  // USB hot-plug 자동 반영
+    refetchOnWindowFocus: true,
+  })
+  const statusQuery = useQuery({
+    queryKey: ['teleop-device-status'],
+    queryFn: getTeleopDeviceStatus,
+    refetchInterval: 3000,
+  })
+  const ports = portsQuery.data ?? []
+  const status = statusQuery.data
+  const connected = !!status?.connected
+
+  const [selectedPort, setSelectedPort] = useState<string>('')
+  const [baudrate, setBaudrate] = useState<number>(1_000_000)
+  const [errMsg, setErrMsg] = useState<string | null>(null)
+
+  // 포트 목록 첫 로드 시 첫 번째 포트 자동 선택. 이미 연결된 포트가 있으면 그걸 우선.
+  useEffect(() => {
+    if (connected && status?.port) {
+      setSelectedPort(status.port)
+      if (status.baudrate) setBaudrate(status.baudrate)
+      return
+    }
+    if (!selectedPort && ports.length > 0) setSelectedPort(ports[0].device)
+  }, [ports, connected, status?.port, status?.baudrate, selectedPort])
+
+  const connectMut = useMutation({
+    mutationFn: () => connectTeleopDevice(selectedPort, baudrate),
+    onSuccess: () => {
+      setErrMsg(null)
+      queryClient.invalidateQueries({ queryKey: ['teleop-device-status'] })
+    },
+    onError: (e: unknown) => setErrMsg(e instanceof Error ? e.message : '연결 실패'),
+  })
+  const disconnectMut = useMutation({
+    mutationFn: () => disconnectTeleopDevice(),
+    onSuccess: () => {
+      setErrMsg(null)
+      queryClient.invalidateQueries({ queryKey: ['teleop-device-status'] })
+    },
+    onError: (e: unknown) => setErrMsg(e instanceof Error ? e.message : '해제 실패'),
+  })
+
+  const busy = connectMut.isPending || disconnectMut.isPending
+
+  return (
+    <div className="flex flex-col gap-2 text-sm">
+      {/* 포트 dropdown + 새로고침 */}
+      <div className="flex items-center gap-1.5">
+        <select
+          value={selectedPort}
+          onChange={(e) => setSelectedPort(e.target.value)}
+          disabled={connected || busy}
+          className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs disabled:bg-slate-100 disabled:text-slate-500"
+        >
+          {ports.length === 0 && <option value="">— 포트 없음 —</option>}
+          {ports.map((p) => (
+            <option key={p.device} value={p.device}>
+              {p.device}{p.product ? ` · ${p.product}` : p.description ? ` · ${p.description}` : ''}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() => portsQuery.refetch()}
+          disabled={portsQuery.isFetching}
+          title="포트 새로고침"
+          className="flex h-7 w-7 items-center justify-center rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${portsQuery.isFetching ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+
+      {/* baudrate */}
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-slate-500">baud</span>
+        <select
+          value={baudrate}
+          onChange={(e) => setBaudrate(parseInt(e.target.value, 10))}
+          disabled={connected || busy}
+          className="rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs disabled:bg-slate-100 disabled:text-slate-500"
+        >
+          <option value={1000000}>1,000,000 (Feetech)</option>
+          <option value={500000}>500,000</option>
+          <option value={115200}>115,200</option>
+          <option value={57600}>57,600</option>
+          <option value={9600}>9,600</option>
+        </select>
+      </div>
+
+      {/* 연결/해제 버튼 + 상태 */}
+      <div className="flex items-center gap-2">
+        {!connected ? (
+          <button
+            type="button"
+            onClick={() => connectMut.mutate()}
+            disabled={!selectedPort || busy}
+            className="flex h-8 items-center gap-1.5 rounded border border-emerald-300 bg-emerald-50 px-3 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Plug className="h-3.5 w-3.5" />
+            {connectMut.isPending ? '연결 중…' : '연결'}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => disconnectMut.mutate()}
+            disabled={busy}
+            className="flex h-8 items-center gap-1.5 rounded border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+          >
+            <Unplug className="h-3.5 w-3.5" />
+            {disconnectMut.isPending ? '해제 중…' : '해제'}
+          </button>
+        )}
+        <span className={`flex items-center gap-1 text-xs ${connected ? 'text-emerald-600' : 'text-slate-400'}`}>
+          <span className={`inline-block h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+          {connected ? '연결됨' : '미연결'}
+        </span>
+      </div>
+
+      {connected && status?.port && (
+        <div className="font-mono text-xs text-slate-500">
+          {status.port} @ {status.baudrate?.toLocaleString()}
+        </div>
+      )}
+      {errMsg && (
+        <p className="break-all text-xs leading-snug text-red-600">{errMsg}</p>
+      )}
+      <p className="text-xs leading-snug text-slate-400">
+        xlerobot 모터 버스 / so101 leader 등 직렬 디바이스. 연결 후 디바이스 프로토콜 브리지는 다음 단계.
+      </p>
+    </div>
   )
 }
 
@@ -912,20 +1169,25 @@ function ActionRow({
   )
 }
 
+type TeleopKey = 'w'|'a'|'s'|'d'|'q'|'r'
+
 function ManualTeleop({
-  startTeleop, stopTeleop,
+  pressKey, stopTeleop, linSpeed, angSpeed, setLinSpeed, setAngSpeed,
 }: {
-  startTeleop: (l: number, a: number) => void
+  pressKey: (k: TeleopKey, down: boolean) => void
   stopTeleop: () => void
+  linSpeed: number
+  angSpeed: number
+  setLinSpeed: (v: number) => void
+  setAngSpeed: (v: number) => void
 }) {
-  // 키보드 키캡 스타일 (WASD). 키보드 입력 또는 마우스 hold 시 하이라이트.
-  // e.code 사용으로 한글 자판도 OK.
+  // 키캡 시각 highlight + 슬라이더 (선/각속도). 실제 명령은 부모 pressKey/apply 처리.
   const [held, setHeld] = useState<Set<string>>(new Set())
   useEffect(() => {
     const isText = (el: EventTarget | null) =>
       el instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)
     const CODE_TO_KEY: Record<string, string> = {
-      KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd',
+      KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd', KeyQ: 'q', KeyR: 'r',
     }
     const onKey = (e: KeyboardEvent, down: boolean) => {
       if (isText(e.target)) return
@@ -945,38 +1207,71 @@ function ManualTeleop({
   }, [])
 
   return (
-    <div className="inline-flex flex-col items-center gap-1">
-      <KeyCap k="w" label="W" l={0.4} a={0}
-              held={held} setHeld={setHeld} startTeleop={startTeleop} stopTeleop={stopTeleop} />
-      <div className="flex gap-1">
-        <KeyCap k="a" label="A" l={0} a={0.8}
-                held={held} setHeld={setHeld} startTeleop={startTeleop} stopTeleop={stopTeleop} />
-        <KeyCap k="s" label="S" l={-0.4} a={0}
-                held={held} setHeld={setHeld} startTeleop={startTeleop} stopTeleop={stopTeleop} />
-        <KeyCap k="d" label="D" l={0} a={-0.8}
-                held={held} setHeld={setHeld} startTeleop={startTeleop} stopTeleop={stopTeleop} />
+    <div className="flex flex-col gap-3">
+      {/* 키캡:  Q W R          */}
+      {/*        A S D          */}
+      <div className="inline-flex flex-col items-center gap-1">
+        <div className="flex gap-1">
+          <KeyCap k="q" label="Q" held={held} setHeld={setHeld} pressKey={pressKey} stopTeleop={stopTeleop} />
+          <KeyCap k="w" label="W" held={held} setHeld={setHeld} pressKey={pressKey} stopTeleop={stopTeleop} />
+          <KeyCap k="r" label="R" held={held} setHeld={setHeld} pressKey={pressKey} stopTeleop={stopTeleop} />
+        </div>
+        <div className="flex gap-1">
+          <KeyCap k="a" label="A" held={held} setHeld={setHeld} pressKey={pressKey} stopTeleop={stopTeleop} />
+          <KeyCap k="s" label="S" held={held} setHeld={setHeld} pressKey={pressKey} stopTeleop={stopTeleop} />
+          <KeyCap k="d" label="D" held={held} setHeld={setHeld} pressKey={pressKey} stopTeleop={stopTeleop} />
+        </div>
+      </div>
+      {/* 속도 슬라이더 — 1~10 범위, 기본 3 */}
+      <div className="flex flex-col gap-2 text-xs">
+        <label className="flex items-center gap-2">
+          <span className="w-20 text-slate-600">선속도</span>
+          <input
+            type="range" min={1} max={10} step={0.5}
+            value={linSpeed}
+            onChange={(e) => setLinSpeed(parseFloat(e.target.value))}
+            className="flex-1 accent-blue-500"
+          />
+          <span className="w-16 text-right font-mono tabular-nums text-slate-700">
+            {linSpeed.toFixed(1)} m/s
+          </span>
+        </label>
+        <label className="flex items-center gap-2">
+          <span className="w-20 text-slate-600">각속도</span>
+          <input
+            type="range" min={1} max={10} step={0.5}
+            value={angSpeed}
+            onChange={(e) => setAngSpeed(parseFloat(e.target.value))}
+            className="flex-1 accent-blue-500"
+          />
+          <span className="w-16 text-right font-mono tabular-nums text-slate-700">
+            {angSpeed.toFixed(1)} rad/s
+          </span>
+        </label>
       </div>
     </div>
   )
 }
 
-// KeyCap 을 ManualTeleop 밖에 정의 — 내부 정의 시 매 렌더마다 새 컴포넌트 만들어져
-// React 가 unmount/remount 하면서 pointer capture 깨지고 active 시각 효과 안 보임.
+// KeyCap 외부 정의 — 매 렌더마다 새 컴포넌트 안 만들어 unmount/remount 회피.
 function KeyCap({
-  k, label, l, a, held, setHeld, startTeleop, stopTeleop,
+  k, label, held, setHeld, pressKey, stopTeleop,
 }: {
-  k: string
+  k: TeleopKey
   label: string
-  l: number
-  a: number
   held: Set<string>
   setHeld: React.Dispatch<React.SetStateAction<Set<string>>>
-  startTeleop: (l: number, a: number) => void
+  pressKey: (k: TeleopKey, down: boolean) => void
   stopTeleop: () => void
 }) {
   const active = held.has(k)
-  const press = () => { setHeld((p) => new Set(p).add(k)); startTeleop(l, a) }
-  const release = () => { setHeld((p) => { const n = new Set(p); n.delete(k); return n }); stopTeleop() }
+  const press = () => { setHeld((p) => new Set(p).add(k)); pressKey(k, true) }
+  const release = () => {
+    setHeld((p) => { const n = new Set(p); n.delete(k); return n })
+    pressKey(k, false)
+    // 모든 키 release 시 부모의 apply 가 stopTeleop 호출 — 여기선 추가 stop 불필요.
+    void stopTeleop
+  }
   return (
     <button
       type="button"
@@ -1094,19 +1389,20 @@ type LiveMeta = {
 }
 
 function MapCanvas({
-  pose, armed, goalPreview, onMapClickWorld, eventIdle,
+  pose, armed, goalPreview, onMapClickWorld, eventIdle, rotation, setRotation,
 }: {
   pose: any
   armed: boolean
   goalPreview: { x: number; y: number } | null
   onMapClickWorld: (x: number, y: number) => void
   eventIdle: boolean
+  rotation: number
+  setRotation: React.Dispatch<React.SetStateAction<number>>
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [scale, setScale] = useState(1)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
-  const [rotation, setRotation] = useState(0)  // radians, 시계방향 +
   const [tilt, setTilt] = useState(0)  // degrees, 0=탑뷰 / 60=거의 옆에서
   const [dragging, setDragging] = useState<'pan' | 'rotate' | 'tilt' | null>(null)
   const lastDrag = useRef({ x: 0, y: 0 })
@@ -1121,7 +1417,9 @@ function MapCanvas({
   }, [])
   const [path, setPath] = useState<Array<[number, number]>>([])
   const [frontiers, setFrontiers] = useState<Array<[number, number]>>([])
-  const [show3D, setShow3D] = useState(false)  // nvblox scene mesh overlay 토글
+  const [show3D, setShow3D] = useState(false)  // nvblox cloud overlay 토글
+  const cloudRef = useRef<Float32Array | null>(null)
+  const [cloudCount, setCloudCount] = useState(0)
 
   // 이벤트 종료 (idle 진입) 시 경로/프론티어 잔재 청소.
   useEffect(() => {
@@ -1231,6 +1529,48 @@ function MapCanvas({
     }
   }, [])
 
+  // /ws/cloud — nvblox PointCloud2 → Float32Array(x,y,z 반복). show3D 일 때만 연결.
+  useEffect(() => {
+    if (!show3D) {
+      cloudRef.current = null
+      setCloudCount(0)
+      return
+    }
+    const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/cloud`
+    let ws: WebSocket | null = null
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let stopped = false
+    const close = () => {
+      if (timer) { clearTimeout(timer); timer = null }
+      if (ws) { try { ws.close() } catch {}; ws = null }
+    }
+    const connect = () => {
+      if (stopped || document.hidden) return
+      ws = new WebSocket(url)
+      ws.binaryType = 'arraybuffer'
+      ws.onclose = () => {
+        if (stopped || document.hidden) return
+        timer = setTimeout(connect, 2000)
+      }
+      ws.onmessage = (ev) => {
+        if (!(ev.data instanceof ArrayBuffer)) return
+        cloudRef.current = new Float32Array(ev.data)
+        setCloudCount(cloudRef.current.length / 3 | 0)
+      }
+    }
+    const onVis = () => {
+      if (document.hidden) close()
+      else if (!ws || ws.readyState >= WebSocket.CLOSING) connect()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    connect()
+    return () => {
+      stopped = true
+      document.removeEventListener('visibilitychange', onVis)
+      close()
+    }
+  }, [show3D])
+
   // /ws/frontiers — explore_lite frontier 후보 (자율 탐사 진행 중일 때만 채워짐)
   useEffect(() => {
     const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/frontiers`
@@ -1269,7 +1609,7 @@ function MapCanvas({
     }
   }, [])
 
-  useEffect(() => { draw() }, [meta, pose, scale, offset, rotation, goalPreview, canvasSize, path, frontiers])
+  useEffect(() => { draw() }, [meta, pose, scale, offset, rotation, goalPreview, canvasSize, path, frontiers, cloudCount, show3D])
 
   // CSS 픽셀 기준 + rotation 역변환. draw() 의 변환 순서: translate(center) → rotate(rot)
   // → scale → drawImage(world). 따라서 역변환: 클릭 px → 중심 빼기 → rotate(-rot) →
@@ -1341,6 +1681,39 @@ function MapCanvas({
 
     const cwx = meta.origin_x + meta.width * meta.resolution / 2
     const cwy = meta.origin_y + meta.height * meta.resolution / 2
+
+    // nvblox 3D pointcloud — show3D 토글 시 z (높이) 별 색상 그라데이션 점.
+    // 회색 격자 위, 맵 이미지 아래에 그려도 되지만 가독성 위해 path 와 비슷한 위치.
+    const cloud = cloudRef.current
+    if (cloud && cloud.length >= 3) {
+      ctx.save()
+      const n = (cloud.length / 3) | 0
+      // 점 크기는 줌에 비례 (가까이 보면 큼)
+      const r = Math.max(1, 2 * scale)
+      // z 범위 추정 (한 번만 — 전체 색상화)
+      let zmin = Infinity, zmax = -Infinity
+      for (let i = 0; i < n; i++) {
+        const z = cloud[i * 3 + 2]
+        if (z < zmin) zmin = z
+        if (z > zmax) zmax = z
+      }
+      const zspan = Math.max(0.1, zmax - zmin)
+      for (let i = 0; i < n; i++) {
+        const wx = cloud[i * 3]
+        const wy = cloud[i * 3 + 1]
+        const z  = cloud[i * 3 + 2]
+        const sx = cx + (wx - cwx) * px
+        const sy = cy - (wy - cwy) * px
+        // viridis-ish: 낮으면 파랑, 높으면 노랑
+        const t = (z - zmin) / zspan  // 0..1
+        const cr = Math.round(70 + 185 * t)
+        const cg = Math.round(40 + 200 * t)
+        const cb = Math.round(180 - 140 * t)
+        ctx.fillStyle = `rgba(${cr},${cg},${cb},0.5)`
+        ctx.fillRect(sx - r / 2, sy - r / 2, r, r)
+      }
+      ctx.restore()
+    }
 
     // explore_lite frontier 후보 — 자율 탐사 중 미탐색 영역. 초록 점.
     if (frontiers.length > 0) {
@@ -1532,13 +1905,10 @@ function MapCanvas({
           탑뷰
         </button>
       </div>
-      {/* 3D 메쉬 overlay placeholder — 실제 mesh 렌더링은 nvblox 활성화 + Three.js 필요 */}
+      {/* 3D pointcloud 활성 표시 */}
       {show3D && (
-        <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded border border-amber-300 bg-amber-50/95 px-4 py-3 text-center text-xs text-amber-900 shadow">
-          <div className="font-semibold">3D scene mesh — 미연결</div>
-          <div className="mt-1 leading-relaxed text-amber-800">
-            nvblox 가 비활성화 상태. preset 에서 use_nvblox:=true + Three.js 렌더 필요
-          </div>
+        <div className="pointer-events-none absolute left-2 top-2 rounded bg-emerald-50/95 border border-emerald-300 px-2 py-1 text-xs text-emerald-800 shadow-sm">
+          3D cloud · {cloudCount.toLocaleString()} pts
         </div>
       )}
       <div className="pointer-events-none absolute bottom-2 right-2 rounded bg-white/90 px-2 py-0.5 font-mono text-xs text-slate-500 backdrop-blur">
