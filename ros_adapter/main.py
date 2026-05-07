@@ -55,25 +55,35 @@ _pose_cache: dict = {'available': False}
 _topics_cache: dict = {'topics': [], 'fetched_at': 0.0}
 _map_cache: dict = {'available': False}  # OccupancyGrid 메타 + 데이터
 _camera_cache: dict = {'data': b''}      # /camera/image_raw/compressed 의 jpeg bytes
+_path_cache: dict = {'points': [], 'updated_at': 0.0}  # Nav2 /plan 의 (x,y) 리스트
+_clock_cache: dict = {'sim_secs': 0.0, 'updated_at': 0.0}  # /clock (rosgraph_msgs/Clock)
+_frontier_cache: dict = {'points': [], 'updated_at': 0.0}  # explore_lite frontier candidates
 _ros_node_thread: Optional[threading.Thread] = None
-# /map / /odom / /camera 새 메시지 도착 시 set, WebSocket 구독자가 await.
+# /map / /odom / /camera / /plan / frontier 새 메시지 도착 시 set, WS 구독자가 await.
 _map_event = threading.Event()
 _pose_event = threading.Event()
 _camera_event = threading.Event()
-# 텔레옵: /cmd_vel publisher (rclpy 로 메시지 보냄). _start_ros_subscriber 안에서 init.
+_path_event = threading.Event()
+_frontier_event = threading.Event()
+# 텔레옵: /cmd_vel publisher + Nav2 /goal_pose publisher. _start_ros_subscriber 에서 init.
 _cmd_vel_pub = None
+_goal_pose_pub = None
+# 단순 회전 (reloc UX 명목) 진행 중 플래그. cancel_event 에서 끄면 즉시 종료.
+_spin_active = False
 
 
 def _start_ros_subscriber() -> None:
     """별도 스레드에서 rclpy spin. /odom 구독해 latest 캐시."""
     global _pose_cache
-    global _cmd_vel_pub
+    global _cmd_vel_pub, _goal_pose_pub
     try:
         import rclpy
         from rclpy.node import Node
-        from nav_msgs.msg import Odometry, OccupancyGrid
-        from geometry_msgs.msg import Twist
+        from nav_msgs.msg import Odometry, OccupancyGrid, Path
+        from geometry_msgs.msg import Twist, PoseStamped
         from sensor_msgs.msg import CompressedImage
+        from rosgraph_msgs.msg import Clock
+        from visualization_msgs.msg import MarkerArray
     except Exception as e:
         log.warning('rclpy import failed — cache disabled: %s', e)
         return
@@ -136,10 +146,51 @@ def _start_ros_subscriber() -> None:
                          reliability=ReliabilityPolicy.BEST_EFFORT)
     node.create_subscription(CompressedImage, '/camera/image_raw/compressed', cam_cb, qos_cam)
 
+    # Nav2 /plan (현재 글로벌 경로) — 이벤트 진행 중 시각화용.
+    def path_cb(msg) -> None:
+        pts = [(ps.pose.position.x, ps.pose.position.y) for ps in msg.poses]
+        _path_cache['points'] = pts
+        _path_cache['updated_at'] = _time.time()
+        _path_event.set()
+    qos_path = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
+                          reliability=ReliabilityPolicy.RELIABLE)
+    node.create_subscription(Path, '/plan', path_cb, qos_path)
+
+    # /clock — gazebo sim_time. 우하단 status bar 표시용.
+    def clock_cb(msg) -> None:
+        _clock_cache['sim_secs'] = msg.clock.sec + msg.clock.nanosec / 1e9
+        _clock_cache['updated_at'] = _time.time()
+    qos_clock = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
+                           reliability=ReliabilityPolicy.BEST_EFFORT)
+    node.create_subscription(Clock, '/clock', clock_cb, qos_clock)
+
+    # explore_lite frontier 후보 — visualization_msgs/MarkerArray.
+    # 각 marker.points 가 polygon 윤곽이거나 단일 frontier 중심점. 단순화: 각 marker
+    # 의 pose.position 만 사용 (마커 모드 SPHERE/CUBE 인 경우 frontier 후보 표시).
+    def frontier_cb(msg) -> None:
+        pts: list[tuple[float, float]] = []
+        for m in msg.markers:
+            # 삭제 액션 (action=2) 은 skip
+            if getattr(m, 'action', 0) == 2:
+                continue
+            p = m.pose.position
+            pts.append((p.x, p.y))
+        _frontier_cache['points'] = pts
+        _frontier_cache['updated_at'] = _time.time()
+        _frontier_event.set()
+    qos_marker = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
+                            reliability=ReliabilityPolicy.RELIABLE)
+    # explore_lite 의 토픽 이름은 보통 /explore/frontiers (publisher)
+    node.create_subscription(MarkerArray, '/explore/frontiers', frontier_cb, qos_marker)
+
     # 텔레옵: 웹에서 보낸 명령을 /cmd_vel 로 publish. Nav2/explore 가 같은 토픽에 쓰므로
     # 사용자가 입력 중이면 마지막 메시지가 이김 → 사실상 우선권 (1순위 요건 충족).
     _cmd_vel_pub = node.create_publisher(Twist, '/cmd_vel', 10)
-    log.info('rclpy subs /odom + /map + camera + cmd_vel publisher ready')
+    # Nav2 /goal_pose publisher — subprocess(ros2 topic pub) 우회. 즉시 publish.
+    qos_goal = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
+                          reliability=ReliabilityPolicy.RELIABLE)
+    _goal_pose_pub = node.create_publisher(PoseStamped, '/goal_pose', qos_goal)
+    log.info('rclpy subs ready + cmd_vel/goal_pose publishers')
 
     try:
         rclpy.spin(node)
@@ -362,30 +413,38 @@ async def floor_fresh(robot_id: str, request: Request):
     }
 
 
-# ── 글로벌 재로컬: 회전 + RTAB-Map BoW 매칭 ────────────────────────────
+# ── '내 위치 찾기': 단순 회전 (UX 명목). 실제 reloc 은 SLAM 백엔드 의존이라 별도. ──
 @app.post('/api/robots/{robot_id}/slam/relocalize')
 def relocalize(robot_id: str):
-    """Mem/IncrementalMemory=false 로 전환 후 spin_and_relocalize.py subprocess 실행.
-
-    동기 호출. spin_and_relocalize 가 종료 코드로 결과 반환:
-      0 = 수렴 성공, 1 = timeout, 2 = error.
+    """로봇을 한 바퀴 회전. /api/system/cancel_event 로 즉시 정지 가능.
+    실제 reloc 알고리즘 (BoW 매칭 등) 은 미구현 — 사용자 시각 피드백 용도.
+    동기 호출이라 ~11초 block 되지만 FastAPI 가 threadpool 에서 처리해 다른 요청 무관.
     """
-    _ros_service_call('/rtabmap/set_mode_localization', 'std_srvs/srv/Empty')
-
-    if not SPIN_RELOC_SCRIPT.exists():
-        raise HTTPException(status_code=500, detail=f'script missing: {SPIN_RELOC_SCRIPT}')
-    cmd = (
-        f'source {ROS_SETUP} && source {WS_SETUP} && '
-        f'python3 {SPIN_RELOC_SCRIPT} --timeout 15'
-    )
-    proc = subprocess.run(
-        ['bash', '-c', cmd], capture_output=True, text=True, timeout=30)
-    return {
-        'converged': proc.returncode == 0,
-        'exit_code': proc.returncode,
-        'stdout_tail': (proc.stdout or '')[-500:],
-        'stderr_tail': (proc.stderr or '')[-200:],
-    }
+    global _spin_active
+    if _cmd_vel_pub is None:
+        raise HTTPException(status_code=503, detail='cmd_vel publisher not initialized')
+    if _spin_active:
+        return {'converged': False, 'reason': 'already spinning'}
+    _spin_active = True
+    from geometry_msgs.msg import Twist
+    spin_msg = Twist()
+    spin_msg.angular.z = 0.6  # rad/s
+    stop_msg = Twist()
+    duration = 11.0  # 한 바퀴 ≈ 2π / 0.6 ≈ 10.5초
+    rate_hz = 10
+    n = int(duration * rate_hz)
+    interrupted = False
+    try:
+        for _ in range(n):
+            if not _spin_active:  # cancel_event 가 False 로 바꾸면 즉시 종료
+                interrupted = True
+                break
+            _cmd_vel_pub.publish(spin_msg)
+            _time.sleep(1.0 / rate_hz)
+    finally:
+        _cmd_vel_pub.publish(stop_msg)
+        _spin_active = False
+    return {'converged': False, 'completed': not interrupted, 'reason': 'simple spin' + (' (canceled)' if interrupted else '')}
 
 
 # ── explore_lite 트리거 ────────────────────────────────────────────────
@@ -479,6 +538,49 @@ def teleop(robot_id: str, req: TeleopRequest):
     return _publish_twist(req.linear, req.angular)
 
 
+@app.post('/api/system/cancel_event')
+def cancel_event():
+    """진행 중 이벤트 (reloc 회전, Nav2 goto, explore) 강제 정지.
+    - spin_and_relocalize.py 프로세스 kill
+    - explore_lite 가 spawn 된 경우 종료 (선택적 — '이벤트 정지' 의미)
+    - /cmd_vel 에 (0,0) burst → 로봇 즉시 정지 (Nav2 controller 가 다시 cmd 보내도
+      우리가 더 자주 publish 하므로 짧게 우위. SLAM 이 살아 있으면 explore 가 다시
+      움직이려 시도하니 explore 도 같이 죽임).
+    """
+    killed = []
+    # 1) spin (reloc) 프로세스
+    try:
+        r = subprocess.run(['pkill', '-f', 'spin_and_relocalize'], capture_output=True)
+        if r.returncode == 0: killed.append('spin_and_relocalize')
+    except Exception: pass
+    # 2) explore_lite (사용자가 SLAM 도 같이 멈추는 의미로)
+    try:
+        r = subprocess.run(['pkill', '-f', 'explore_lite explore.launch'], capture_output=True)
+        if r.returncode == 0: killed.append('explore_lite')
+    except Exception: pass
+    # 3) Nav2 BT navigator action cancel — bash one-shot.
+    #    BT navigator 의 active goal 을 모두 cancel.
+    try:
+        subprocess.run(['bash', '-c',
+            f'source {ROS_SETUP} && '
+            "ros2 action send_goal --feedback /navigate_to_pose nav2_msgs/action/NavigateToPose "
+            "'{pose: {header: {frame_id: \"map\"}, pose: {position: {x: 0.0, y: 0.0, z: 0.0}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}}}' "
+            "--cancel || true"],
+            capture_output=True, timeout=5)
+        killed.append('nav2_goal')
+    except Exception: pass
+    # 4) cmd_vel (0,0) burst — 0.5초 동안
+    if _cmd_vel_pub is not None:
+        from geometry_msgs.msg import Twist
+        msg = Twist()
+        for _ in range(5):
+            try: _cmd_vel_pub.publish(msg)
+            except Exception: pass
+            _time.sleep(0.1)
+        killed.append('cmd_vel_zero_burst')
+    return {'ok': True, 'killed': killed}
+
+
 @app.post('/api/system/teleop')
 def teleop_system(req: TeleopRequest):
     """auth 없이 vite /api/system 프록시로 직접 어댑터 호출.
@@ -495,26 +597,21 @@ class NavGoalRequest(BaseModel):
 
 @app.post('/api/system/nav/goto')
 def nav_goto(req: NavGoalRequest):
-    """Nav2 의 BT navigator 가 listen 하는 PoseStamped action goal 전송 (CLI 우회).
-    rclpy ActionClient 가 깔끔하지만 단발성이라 ros2 topic pub 으로 단순하게."""
+    """rclpy publisher 로 /goal_pose 즉시 publish (subprocess timeout 회피).
+    Nav2 BT navigator 가 transient_local QoS 로 받아서 navigate_to_pose action 트리거."""
+    if _goal_pose_pub is None:
+        raise HTTPException(status_code=503, detail='goal_pose publisher not initialized')
     import math
-    qz = math.sin(req.yaw / 2.0)
-    qw = math.cos(req.yaw / 2.0)
-    msg = (
-        '{header: {frame_id: "map"}, '
-        f'pose: {{position: {{x: {req.x}, y: {req.y}, z: 0.0}}, '
-        f'orientation: {{x: 0.0, y: 0.0, z: {qz}, w: {qw}}}}}}}'
-    )
-    cmd = (
-        f'source {ROS_SETUP} && source {WS_SETUP} && '
-        f"ros2 topic pub --once /goal_pose geometry_msgs/msg/PoseStamped '{msg}'"
-    )
-    proc = subprocess.run(['bash', '-c', cmd], capture_output=True, text=True, timeout=10)
-    return {
-        'ok': proc.returncode == 0,
-        'log': (proc.stdout + proc.stderr)[-300:],
-        'goal': {'x': req.x, 'y': req.y, 'yaw': req.yaw},
-    }
+    from geometry_msgs.msg import PoseStamped
+    msg = PoseStamped()
+    msg.header.frame_id = 'map'
+    msg.pose.position.x = float(req.x)
+    msg.pose.position.y = float(req.y)
+    msg.pose.position.z = 0.0
+    msg.pose.orientation.z = math.sin(req.yaw / 2.0)
+    msg.pose.orientation.w = math.cos(req.yaw / 2.0)
+    _goal_pose_pub.publish(msg)
+    return {'ok': True, 'goal': {'x': req.x, 'y': req.y, 'yaw': req.yaw}}
 
 
 # ── 헬스 ────────────────────────────────────────────────────────────────
@@ -581,6 +678,7 @@ def system_health():
         'sim_alive': sim_alive,
         'slam_active': _slam_node_alive(),
         'explore_active': _explore_node_alive(),
+        'sim_secs': _clock_cache.get('sim_secs', 0.0),
         'rtabmap_db_path': str(RTABMAP_DB),
         'rtabmap_db_size_mb': round(db_size / 1e6, 2),
         'ros_topic_count': len(ros_topics),
@@ -721,7 +819,8 @@ async def ws_map(ws: WebSocket):
 
 @app.websocket('/ws/pose')
 async def ws_pose(ws: WebSocket):
-    """라이브 pose 스트림. /odom 메시지마다 JSON 전송 (rate ~50Hz)."""
+    """라이브 pose 스트림. /odom 메시지마다 JSON 전송 (rate ~50Hz).
+    sim_time (clock 캐시) 도 함께 동봉."""
     await ws.accept()
     _ensure_subscriber()
     last_seen = 0.0
@@ -730,12 +829,55 @@ async def ws_pose(ws: WebSocket):
             up = _pose_cache.get('updated_at', 0)
             if _pose_cache.get('available') and up != last_seen:
                 last_seen = up
-                await ws.send_json(_pose_cache)
+                payload = {**_pose_cache, 'sim_secs': _clock_cache.get('sim_secs', 0.0)}
+                await ws.send_json(payload)
             await asyncio.get_event_loop().run_in_executor(
                 None, lambda: _pose_event.wait(timeout=1.0))
             _pose_event.clear()
     except WebSocketDisconnect:
         pass
+
+
+@app.websocket('/ws/frontiers')
+async def ws_frontiers(ws: WebSocket):
+    """explore_lite frontier 후보 (x,y) 배열. 새 marker array 도착 시 push."""
+    await ws.accept()
+    _ensure_subscriber()
+    last_seen = 0.0
+    try:
+        while True:
+            up = _frontier_cache.get('updated_at', 0)
+            if up != last_seen:
+                last_seen = up
+                await ws.send_json({'points': _frontier_cache['points'], 'updated_at': up})
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: _frontier_event.wait(timeout=2.0))
+            _frontier_event.clear()
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log.warning('ws_frontiers error: %s', e)
+
+
+@app.websocket('/ws/path')
+async def ws_path(ws: WebSocket):
+    """Nav2 /plan 라이브 경로. 이벤트 진행 중 path 가 publish 되면 (x,y) 배열 push."""
+    await ws.accept()
+    _ensure_subscriber()
+    last_seen = 0.0
+    try:
+        while True:
+            up = _path_cache.get('updated_at', 0)
+            if up != last_seen:
+                last_seen = up
+                await ws.send_json({'points': _path_cache['points'], 'updated_at': up})
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: _path_event.wait(timeout=2.0))
+            _path_event.clear()
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log.warning('ws_path error: %s', e)
 
 
 @app.websocket('/ws/camera')

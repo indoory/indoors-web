@@ -263,6 +263,7 @@ export interface SystemHealth {
   sim_alive?: boolean
   slam_active?: boolean
   explore_active?: boolean
+  sim_secs?: number
   rtabmap_db_path?: string
   rtabmap_db_size_mb?: number
   ros_topic_count?: number
