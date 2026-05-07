@@ -13,6 +13,11 @@ export default defineConfig({
     // dev 편의보다 페이지 로딩 우선 — false 로 비활성화. 필요 시 개별 설정.
     hmr: false,
     proxy: {
+      // 어댑터 라이브 WebSocket 스트림 (/ws/map, /ws/pose).
+      '/ws': {
+        target: 'ws://localhost:8000',
+        ws: true,
+      },
       // /api/system/* 은 어댑터(:8000) 가 직접 처리 — 인증 X, 빠른 라이브 데이터.
       // 나머지 /api/* 는 Spring(:8080) 으로.
       '/api/system': {

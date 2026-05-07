@@ -137,7 +137,14 @@ public class ViewAssemblerService {
 
   public ApiDtos.MapMetadataResponse toMapMetadata(IndoorMap map) {
     return new ApiDtos.MapMetadataResponse(
-        map.getId(), map.getCode(), map.getName(), map.isActive(), map.getNav2YamlUrl());
+        map.getId(),
+        map.getCode(),
+        map.getName(),
+        map.isActive(),
+        map.getNav2YamlUrl(),
+        map.getRtabmapDbPath(),
+        map.getRtabmapDbSize(),
+        map.getRtabmapDbSavedAt());
   }
 
   public ApiDtos.MapRobotResponse toMapRobot(Robot robot, Floor floor, Task activeTask) {

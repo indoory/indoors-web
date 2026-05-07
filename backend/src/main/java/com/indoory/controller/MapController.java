@@ -45,7 +45,14 @@ public class MapController {
       @RequestBody ApiDtos.SaveSessionRequest request) {
     var map = mapService.createMapFromCurrentSession(request.name(), request.code());
     return new ApiDtos.MapMetadataResponse(
-        map.getId(), map.getCode(), map.getName(), map.isActive(), map.getNav2YamlUrl());
+        map.getId(),
+        map.getCode(),
+        map.getName(),
+        map.isActive(),
+        map.getNav2YamlUrl(),
+        map.getRtabmapDbPath(),
+        map.getRtabmapDbSize(),
+        map.getRtabmapDbSavedAt());
   }
 
   @Operation(summary = "Rename map", description = "Untitled 맵에 이름 부여 (= 영구 저장).")
@@ -54,7 +61,14 @@ public class MapController {
       @PathVariable Long mapId, @RequestBody ApiDtos.RenameMapRequest request) {
     var map = mapService.renameMap(mapId, request.name());
     return new ApiDtos.MapMetadataResponse(
-        map.getId(), map.getCode(), map.getName(), map.isActive(), map.getNav2YamlUrl());
+        map.getId(),
+        map.getCode(),
+        map.getName(),
+        map.isActive(),
+        map.getNav2YamlUrl(),
+        map.getRtabmapDbPath(),
+        map.getRtabmapDbSize(),
+        map.getRtabmapDbSavedAt());
   }
 
   @Operation(

@@ -133,7 +133,14 @@ public final class ApiDtos {
       List<LocationResponse> locations) {}
 
   public record MapMetadataResponse(
-      Long id, String code, String name, boolean active, String nav2YamlUrl) {}
+      Long id,
+      String code,
+      String name,
+      boolean active,
+      String nav2YamlUrl,
+      String rtabmapDbPath,
+      Long rtabmapDbSize,
+      java.time.Instant rtabmapDbSavedAt) {}
 
   public record MapRobotResponse(
       Long robotId,

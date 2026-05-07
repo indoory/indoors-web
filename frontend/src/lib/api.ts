@@ -261,12 +261,25 @@ export interface SystemHealth {
   adapter?: string
   bridge?: string
   sim_alive?: boolean
+  slam_active?: boolean
+  explore_active?: boolean
   rtabmap_db_path?: string
   rtabmap_db_size_mb?: number
   ros_topic_count?: number
   ros_expected_topics?: Record<string, boolean>
   disk_free_gb?: number
   floor_db_dir?: string
+}
+
+// 텔레옵: linear m/s, angular rad/s. 어댑터 직접 호출 (vite /api/system 프록시).
+export async function teleop(linear: number, angular: number) {
+  // request() 가 /api 경로를 spring(8080) 으로 보내지 않고, vite proxy 가
+  // /api/system/* 를 :8000 으로 라우팅하므로 fetch 직접 사용 (auth header 불필요).
+  await fetch('/api/system/teleop', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ linear, angular }),
+  })
 }
 
 export function getSystemHealth(robotId: number | string) {

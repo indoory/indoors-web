@@ -19,9 +19,10 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Body, FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import Body, FastAPI, HTTPException, Request, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+import asyncio
 import requests
 import logging
 
@@ -53,16 +54,26 @@ import time as _time
 _pose_cache: dict = {'available': False}
 _topics_cache: dict = {'topics': [], 'fetched_at': 0.0}
 _map_cache: dict = {'available': False}  # OccupancyGrid 메타 + 데이터
+_camera_cache: dict = {'data': b''}      # /camera/image_raw/compressed 의 jpeg bytes
 _ros_node_thread: Optional[threading.Thread] = None
+# /map / /odom / /camera 새 메시지 도착 시 set, WebSocket 구독자가 await.
+_map_event = threading.Event()
+_pose_event = threading.Event()
+_camera_event = threading.Event()
+# 텔레옵: /cmd_vel publisher (rclpy 로 메시지 보냄). _start_ros_subscriber 안에서 init.
+_cmd_vel_pub = None
 
 
 def _start_ros_subscriber() -> None:
     """별도 스레드에서 rclpy spin. /odom 구독해 latest 캐시."""
     global _pose_cache
+    global _cmd_vel_pub
     try:
         import rclpy
         from rclpy.node import Node
         from nav_msgs.msg import Odometry, OccupancyGrid
+        from geometry_msgs.msg import Twist
+        from sensor_msgs.msg import CompressedImage
     except Exception as e:
         log.warning('rclpy import failed — cache disabled: %s', e)
         return
@@ -77,7 +88,6 @@ def _start_ros_subscriber() -> None:
         global _pose_cache
         p = msg.pose.pose
         o = p.orientation
-        # quaternion → yaw (z-axis rotation)
         import math
         yaw = math.atan2(2 * (o.w * o.z + o.x * o.y),
                          1 - 2 * (o.y * o.y + o.z * o.z))
@@ -91,6 +101,7 @@ def _start_ros_subscriber() -> None:
             'frame': msg.header.frame_id,
             'updated_at': _time.time(),
         }
+        _pose_event.set()
 
     def map_cb(msg) -> None:
         global _map_cache
@@ -101,9 +112,10 @@ def _start_ros_subscriber() -> None:
             'resolution': msg.info.resolution,
             'origin_x': msg.info.origin.position.x,
             'origin_y': msg.info.origin.position.y,
-            'data': list(msg.data),  # int8 배열 (-1 unknown, 0 free, 100 occupied)
+            'data': list(msg.data),  # int8 (-1 unknown, 0 free, 100 occupied)
             'updated_at': _time.time(),
         }
+        _map_event.set()
 
     from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
     qos_odom = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=10,
@@ -112,10 +124,22 @@ def _start_ros_subscriber() -> None:
                          reliability=ReliabilityPolicy.RELIABLE,
                          durability=DurabilityPolicy.TRANSIENT_LOCAL)
     node.create_subscription(Odometry, '/odom', odom_cb, qos_odom)
-    # rtabmap 의 실제 OccupancyGrid 발행 토픽: /rtabmap/map (또는 /rtabmap/grid_prob_map).
-    # /map 으로 remap 하려 했으나 launch 의 'grid_map' 키는 존재하지 않아 no-op 였음.
-    node.create_subscription(OccupancyGrid, '/rtabmap/map', map_cb, qos_map)
-    log.info('rclpy subscribers /odom + /rtabmap/map started (cached)')
+    # slam_toolbox 는 /map 직접 발행 (transient_local). RTAB-Map 도 launch 의 ('map','/map')
+    # remap 으로 같은 토픽에 publish — 한 곳에서 양쪽 백엔드 커버.
+    node.create_subscription(OccupancyGrid, '/map', map_cb, qos_map)
+
+    # 카메라 jpeg 캐시 — /camera/image_raw/compressed 도착 시 bytes 만 저장.
+    def cam_cb(msg) -> None:
+        _camera_cache['data'] = bytes(msg.data)
+        _camera_event.set()
+    qos_cam = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
+                         reliability=ReliabilityPolicy.BEST_EFFORT)
+    node.create_subscription(CompressedImage, '/camera/image_raw/compressed', cam_cb, qos_cam)
+
+    # 텔레옵: 웹에서 보낸 명령을 /cmd_vel 로 publish. Nav2/explore 가 같은 토픽에 쓰므로
+    # 사용자가 입력 중이면 마지막 메시지가 이김 → 사실상 우선권 (1순위 요건 충족).
+    _cmd_vel_pub = node.create_publisher(Twist, '/cmd_vel', 10)
+    log.info('rclpy subs /odom + /map + camera + cmd_vel publisher ready')
 
     try:
         rclpy.spin(node)
@@ -160,18 +184,91 @@ def _ros_service_call(srv_name: str, srv_type: str, args: str = '{}') -> tuple[b
         return False, f'timeout calling {srv_name}'
 
 
-# ── SLAM 모드 토글 ──────────────────────────────────────────────────────
+# ── SLAM 노드 라이프사이클 (subprocess) ─────────────────────────────────
+# 부팅 시엔 slam_toolbox 안 띄우고 (use_slam_toolbox:=false), 웹 명령으로 spawn.
+# slam_toolbox 는 lifecycle 노드라 직접 ros2 run 으로 띄우면 unconfigured 상태로 남으므로
+# launch 에 들어있는 동일한 lifecycle 시퀀스 (configure → activate) 를 재사용하기 위해
+# launch_slam_node.launch.py 같은 별도 launch 가 필요. 간단히 async_slam_toolbox_node 를
+# 직접 띄우고 lifecycle CLI 로 configure/activate.
+SLAM_PARAMS = '/root/gz-nav-sim/install/gz_nav_sim/share/gz_nav_sim/config/slam_params.yaml'
+_slam_proc: Optional[subprocess.Popen] = None
+
+
+def _slam_node_alive() -> bool:
+    try:
+        out = subprocess.run(
+            ['bash', '-c',
+             f'source {ROS_SETUP} && source {WS_SETUP} && '
+             'ros2 node list 2>/dev/null | grep -F /slam_toolbox'],
+            capture_output=True, text=True, timeout=5)
+        return out.returncode == 0 and bool(out.stdout.strip())
+    except Exception:
+        return False
+
+
+def _slam_spawn() -> dict:
+    """slam_toolbox 노드 spawn + lifecycle activate. 이미 떠있으면 noop."""
+    global _slam_proc
+    if _slam_node_alive():
+        return {'ok': True, 'status': 'already_running'}
+    if _slam_proc and _slam_proc.poll() is None:
+        return {'ok': True, 'status': 'spawning_pending', 'pid': _slam_proc.pid}
+    cmd = (
+        f'source {ROS_SETUP} && source {WS_SETUP} && '
+        f'ros2 run slam_toolbox async_slam_toolbox_node '
+        f'--ros-args --params-file {SLAM_PARAMS} '
+        f'-p use_sim_time:=true -p use_lifecycle_manager:=false'
+    )
+    _slam_proc = subprocess.Popen(['bash', '-c', cmd])
+    # lifecycle configure → activate. 노드 등장까지 잠깐 대기.
+    for _ in range(20):
+        if _slam_node_alive():
+            break
+        _time.sleep(0.5)
+    cfg = subprocess.run(
+        ['bash', '-c',
+         f'source {ROS_SETUP} && '
+         'ros2 lifecycle set /slam_toolbox configure && '
+         'ros2 lifecycle set /slam_toolbox activate'],
+        capture_output=True, text=True, timeout=20)
+    return {
+        'ok': cfg.returncode == 0,
+        'status': 'started',
+        'pid': _slam_proc.pid,
+        'lifecycle_log': (cfg.stdout + cfg.stderr)[:300],
+    }
+
+
 @app.post('/api/robots/{robot_id}/slam/start')
 def slam_start(robot_id: str):
-    ok, log = _ros_service_call('/rtabmap/set_mode_mapping', 'std_srvs/srv/Empty')
-    return {'ok': ok, 'log': log[:500]}
+    return _slam_spawn()
 
 
 @app.post('/api/robots/{robot_id}/slam/stop')
 def slam_stop(robot_id: str):
-    # rtabmap 의 backup → 안전 stop. set_mode_localization 으로 책임 종료.
-    ok, log = _ros_service_call('/rtabmap/backup', 'std_srvs/srv/Empty')
-    return {'ok': ok, 'log': log[:500]}
+    """slam_toolbox + explore 정리. uvicorn --reload 로 _slam_proc handle 잃을 수
+    있으니 pkill -f 로도 fallback (이름 기반 catch-all)."""
+    global _slam_proc, _explore_proc
+    killed = []
+    for proc, name in ((_explore_proc, 'explore'), (_slam_proc, 'slam')):
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            killed.append(f'{name}(pid={proc.pid})')
+    _slam_proc = None
+    _explore_proc = None
+    # 이름 기반 잔여 정리 (--reload 후 handle 잃은 경우 등).
+    for pat in ('async_slam_toolbox_node', 'explore_lite explore.launch'):
+        try:
+            r = subprocess.run(['pkill', '-f', pat], capture_output=True)
+            if r.returncode == 0:
+                killed.append(f'pkill:{pat}')
+        except Exception:
+            pass
+    return {'ok': True, 'killed': killed}
 
 
 # ── DB 저장: rtabmap → 디스크 → Spring Boot 푸시 ───────────────────────
@@ -297,15 +394,33 @@ _explore_proc: Optional[subprocess.Popen] = None
 
 @app.post('/api/robots/{robot_id}/slam/explore/start')
 def explore_start(robot_id: str):
+    """매핑·탐사 시작. SLAM 이 먼저 떠있어야 explore_lite 가 /map 입력 받을 수 있음."""
     global _explore_proc
+    slam_result = _slam_spawn()
+    # 1) sim_nav.launch.py 가 use_explore=true 로 띄운 explore_node 가 있나?
+    try:
+        proc = subprocess.run(
+            ['bash', '-c',
+             f'source {ROS_SETUP} && source {WS_SETUP} && '
+             'ros2 node list 2>/dev/null | grep -F /explore_node'],
+            capture_output=True, text=True, timeout=5)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return {'ok': True, 'status': 'already_running_via_launch',
+                    'slam': slam_result}
+    except Exception:
+        pass
+    # 2) 우리가 이전에 띄운 거면 그대로 사용
     if _explore_proc and _explore_proc.poll() is None:
-        return {'ok': True, 'status': 'already_running'}
+        return {'ok': True, 'status': 'already_running_via_adapter',
+                'pid': _explore_proc.pid, 'slam': slam_result}
+    # 3) 새로 spawn
     cmd = (
         f'source {ROS_SETUP} && source {WS_SETUP} && '
         'ros2 launch explore_lite explore.launch.py use_sim_time:=true'
     )
     _explore_proc = subprocess.Popen(['bash', '-c', cmd])
-    return {'ok': True, 'status': 'started', 'pid': _explore_proc.pid}
+    return {'ok': True, 'status': 'started', 'pid': _explore_proc.pid,
+            'slam': slam_result}
 
 
 @app.get('/api/robots/{robot_id}/slam/explore/status')
@@ -317,6 +432,89 @@ def explore_status(robot_id: str):
     if rc is None:
         return {'exploreStatus': 'running', 'pid': _explore_proc.pid}
     return {'exploreStatus': 'stopped', 'exit_code': rc}
+
+
+@app.get('/api/robots/{robot_id}/slam/status')
+def slam_status(robot_id: str):
+    """SLAM/explore 활성 여부. uvicorn --reload 로 _slam_proc handle 잃어도
+    실제 ROS 노드 존재 여부로 판단 → 항상 정확."""
+    return {
+        'slamActive': _slam_node_alive(),
+        'exploreActive': _explore_node_alive(),
+    }
+
+
+def _explore_node_alive() -> bool:
+    try:
+        out = subprocess.run(
+            ['bash', '-c',
+             f'source {ROS_SETUP} && source {WS_SETUP} && '
+             'ros2 node list 2>/dev/null | grep -F /explore_node'],
+            capture_output=True, text=True, timeout=5)
+        return out.returncode == 0 and bool(out.stdout.strip())
+    except Exception:
+        return False
+
+
+# ── 텔레옵 ───────────────────────────────────────────────────────────────
+class TeleopRequest(BaseModel):
+    linear: float = 0.0   # m/s, +전진 -후진
+    angular: float = 0.0  # rad/s, +좌회전 -우회전
+
+
+def _publish_twist(linear: float, angular: float) -> dict:
+    if _cmd_vel_pub is None:
+        raise HTTPException(status_code=503, detail='cmd_vel publisher not initialized')
+    from geometry_msgs.msg import Twist
+    msg = Twist()
+    msg.linear.x = float(linear)
+    msg.angular.z = float(angular)
+    _cmd_vel_pub.publish(msg)
+    return {'ok': True, 'linear': msg.linear.x, 'angular': msg.angular.z}
+
+
+@app.post('/api/robots/{robot_id}/teleop')
+def teleop(robot_id: str, req: TeleopRequest):
+    """1회 Twist publish. Spring Boot 경유 (auth 필요)."""
+    return _publish_twist(req.linear, req.angular)
+
+
+@app.post('/api/system/teleop')
+def teleop_system(req: TeleopRequest):
+    """auth 없이 vite /api/system 프록시로 직접 어댑터 호출.
+    프론트가 hold 중에 ~10Hz 폴링하므로 round-trip 짧게 유지 (8080 우회)."""
+    return _publish_twist(req.linear, req.angular)
+
+
+# ── 네비게이션 목표 (Nav2 goal) ─────────────────────────────────────────
+class NavGoalRequest(BaseModel):
+    x: float       # 맵 좌표계 (m)
+    y: float       # 맵 좌표계 (m)
+    yaw: float = 0.0  # 도착 시 yaw (rad), 기본 0
+
+
+@app.post('/api/system/nav/goto')
+def nav_goto(req: NavGoalRequest):
+    """Nav2 의 BT navigator 가 listen 하는 PoseStamped action goal 전송 (CLI 우회).
+    rclpy ActionClient 가 깔끔하지만 단발성이라 ros2 topic pub 으로 단순하게."""
+    import math
+    qz = math.sin(req.yaw / 2.0)
+    qw = math.cos(req.yaw / 2.0)
+    msg = (
+        '{header: {frame_id: "map"}, '
+        f'pose: {{position: {{x: {req.x}, y: {req.y}, z: 0.0}}, '
+        f'orientation: {{x: 0.0, y: 0.0, z: {qz}, w: {qw}}}}}}}'
+    )
+    cmd = (
+        f'source {ROS_SETUP} && source {WS_SETUP} && '
+        f"ros2 topic pub --once /goal_pose geometry_msgs/msg/PoseStamped '{msg}'"
+    )
+    proc = subprocess.run(['bash', '-c', cmd], capture_output=True, text=True, timeout=10)
+    return {
+        'ok': proc.returncode == 0,
+        'log': (proc.stdout + proc.stderr)[-300:],
+        'goal': {'x': req.x, 'y': req.y, 'yaw': req.yaw},
+    }
 
 
 # ── 헬스 ────────────────────────────────────────────────────────────────
@@ -362,14 +560,27 @@ def system_health():
     db_size = RTABMAP_DB.stat().st_size if RTABMAP_DB.exists() else 0
     disk = shutil.disk_usage('/')
 
+    # 실제 데이터 흐름 기준 (단순 토픽 존재 X). /odom 과 /map 은 영속 구독자가
+    # 캐시하므로 그 신선도로 판단. 나머지는 우선 토픽 list 기반 (개선 여지 있음).
     expected = ['/odom', '/scan', '/map', '/tf', '/tf_static',
                 '/camera/image_raw', '/d456/depth/image_raw',
                 '/rtabmap/info', '/rtabmap/grid_map']
-    topic_status = {t: t in ros_topics for t in expected}
+    topic_status: dict[str, bool] = {}
+    for t in expected:
+        if t == '/odom':
+            age = now - (_pose_cache.get('updated_at') or 0)
+            topic_status[t] = _pose_cache.get('available', False) and age < 5
+        elif t == '/map':
+            age = now - (_map_cache.get('updated_at') or 0)
+            topic_status[t] = _map_cache.get('available', False) and age < 30
+        else:
+            topic_status[t] = t in ros_topics
 
     return {
         'adapter': 'ok',
         'sim_alive': sim_alive,
+        'slam_active': _slam_node_alive(),
+        'explore_active': _explore_node_alive(),
         'rtabmap_db_path': str(RTABMAP_DB),
         'rtabmap_db_size_mb': round(db_size / 1e6, 2),
         'ros_topic_count': len(ros_topics),
@@ -441,6 +652,109 @@ def map_png():
         return Response(content=buf.getvalue(), media_type='image/png')
     except Exception as e:
         return Response(content=str(e).encode(), status_code=500)
+
+
+def _grid_to_png_bytes() -> Optional[bytes]:
+    if not _map_cache.get('available'):
+        return None
+    try:
+        from PIL import Image
+        import io
+        w, h = _map_cache['width'], _map_cache['height']
+        data = _map_cache['data']
+        pixels = bytearray(w * h)
+        for i, v in enumerate(data):
+            if v < 0:
+                pixels[i] = 127
+            elif v < 50:
+                pixels[i] = 255
+            else:
+                pixels[i] = 0
+        img = Image.frombytes('L', (w, h), bytes(pixels))
+        img = img.transpose(Image.FLIP_TOP_BOTTOM)
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+@app.websocket('/ws/map')
+async def ws_map(ws: WebSocket):
+    """라이브 맵 스트림. /rtabmap/map 메시지 도착할 때마다 메타 JSON + PNG 바이너리 전송.
+
+    프로토콜 (한 사이클):
+      1. JSON text frame: {width,height,resolution,origin_x,origin_y,updated_at}
+      2. binary frame: PNG 데이터
+    클라이언트는 둘을 페어로 처리.
+    """
+    await ws.accept()
+    _ensure_subscriber()
+    last_seen = 0.0
+    try:
+        # 즉시 한 번 보내기 (있으면)
+        while True:
+            up = _map_cache.get('updated_at', 0)
+            if _map_cache.get('available') and up != last_seen:
+                last_seen = up
+                meta = {
+                    'width': _map_cache['width'],
+                    'height': _map_cache['height'],
+                    'resolution': _map_cache['resolution'],
+                    'origin_x': _map_cache['origin_x'],
+                    'origin_y': _map_cache['origin_y'],
+                    'updated_at': up,
+                }
+                await ws.send_json(meta)
+                png = _grid_to_png_bytes()
+                if png:
+                    await ws.send_bytes(png)
+            # 새 메시지 대기 (또는 1초 timeout 으로 클라이언트 ping)
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: _map_event.wait(timeout=1.0))
+            _map_event.clear()
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log.warning('ws_map error: %s', e)
+
+
+@app.websocket('/ws/pose')
+async def ws_pose(ws: WebSocket):
+    """라이브 pose 스트림. /odom 메시지마다 JSON 전송 (rate ~50Hz)."""
+    await ws.accept()
+    _ensure_subscriber()
+    last_seen = 0.0
+    try:
+        while True:
+            up = _pose_cache.get('updated_at', 0)
+            if _pose_cache.get('available') and up != last_seen:
+                last_seen = up
+                await ws.send_json(_pose_cache)
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: _pose_event.wait(timeout=1.0))
+            _pose_event.clear()
+    except WebSocketDisconnect:
+        pass
+
+
+@app.websocket('/ws/camera')
+async def ws_camera(ws: WebSocket):
+    """라이브 카메라 stream. /camera/image_raw/compressed (jpeg) 도착 시 bytes push."""
+    await ws.accept()
+    _ensure_subscriber()
+    try:
+        while True:
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: _camera_event.wait(timeout=2.0))
+            _camera_event.clear()
+            data = _camera_cache.get('data')
+            if data:
+                await ws.send_bytes(data)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log.warning('ws_camera error: %s', e)
 
 
 @app.get('/api/system/last_pose')

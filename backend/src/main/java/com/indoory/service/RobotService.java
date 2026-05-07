@@ -52,15 +52,43 @@ public class RobotService {
 
   /**
    * 로봇이 항상 현재 매핑 세션에 대응하는 IndoorMap 을 가지고 있도록 보장.
-   * mapId 가 null 이거나 referenced map 이 삭제됐으면 'Untitled-{ts}' 새 row 생성 후 연결.
-   * 데이터(rtabmap.db blob) 는 별개 — 이 메서드는 메타 row 만 보장.
+   *
+   * <p>mapId 가 null 이거나 referenced map 이 삭제됐으면 'Untitled-{ts}' 새 row 생성 후 연결.
+   * 새 row 의 rtabmap_db_path 는 ~/.ros/rtabmap.db (working DB) 을 가리키게 함 →
+   * RTAB-Map 의 작업 파일과 RDB row 가 1:1 연결. size 도 매번 fetch 시 갱신해
+   * 사용자가 실시간으로 누적량 확인 가능.
    */
   @Transactional
   public void ensureCurrentMap(Robot robot) {
+    java.nio.file.Path workingDb = java.nio.file.Paths.get(
+        System.getProperty("user.home"), ".ros", "rtabmap.db");
     Long mid = robot.getMapId();
-    if (mid != null && mapRepository.findById(mid).isPresent()) return;
+    IndoorMap map;
+    if (mid != null) {
+      var opt = mapRepository.findById(mid);
+      if (opt.isPresent()) {
+        map = opt.get();
+        // draft 상태(Untitled — snapshot 으로 promote 안 됨)면 working file 크기 갱신.
+        boolean isDraft = "Untitled".equals(map.getName())
+            || map.getRtabmapDbPath() == null
+            || map.getRtabmapDbPath().contains(".ros/rtabmap.db");
+        if (isDraft && java.nio.file.Files.exists(workingDb)) {
+          try {
+            map.recordRtabmapDb(workingDb.toString(), java.nio.file.Files.size(workingDb));
+            mapRepository.save(map);
+          } catch (Exception ignored) {}
+        }
+        return;
+      }
+    }
+    // 신규 Untitled 생성 — working file 가리키게.
     String code = "session-" + System.currentTimeMillis();
     IndoorMap fresh = new IndoorMap(code, "Untitled");
+    if (java.nio.file.Files.exists(workingDb)) {
+      try {
+        fresh.recordRtabmapDb(workingDb.toString(), java.nio.file.Files.size(workingDb));
+      } catch (Exception ignored) {}
+    }
     mapRepository.save(fresh);
     try {
       java.lang.reflect.Field f = Robot.class.getDeclaredField("mapId");

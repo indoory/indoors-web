@@ -144,6 +144,10 @@ export interface MapMetadata {
   code: string
   name: string
   active: boolean
+  nav2YamlUrl?: string | null
+  rtabmapDbPath?: string | null
+  rtabmapDbSize?: number | null
+  rtabmapDbSavedAt?: string | null
 }
 
 export interface MapRobot {

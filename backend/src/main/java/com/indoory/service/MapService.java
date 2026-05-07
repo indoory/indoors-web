@@ -115,26 +115,51 @@ public class MapService {
     return viewAssemblerService.toMapMetadata(map);
   }
 
-  /** 'Untitled' draft 맵에 이름 부여 (= 사용자가 영구 저장). */
+  // RTAB-Map 작업 DB (라이브) — 모든 draft 가 이걸 가리킴.
+  private static final Path WORKING_DB =
+      Paths.get(System.getProperty("user.home"), ".ros", "rtabmap.db");
+
+  /**
+   * 'Untitled' draft 에 이름 부여 = 영구 저장 승격.
+   *
+   * <p>이전엔 cosmetic rename 만 했음. 이젠 ~/.ros/rtabmap.db (라이브 작업본)
+   * 을 /var/indoory/maps/{id}.db 로 복사 → 영구 snapshot. row 의 path/size/
+   * saved_at + name 모두 갱신. 다음 fetch 에서 새 Untitled 가 자동 생성돼
+   * 라이브 working file 을 다시 가리킴.
+   */
   @Transactional
   public IndoorMap renameMap(Long mapId, String name) {
     IndoorMap map = findMap(mapId);
     try {
-      java.lang.reflect.Field f = IndoorMap.class.getDeclaredField("name");
-      f.setAccessible(true);
-      f.set(map, name);
+      java.lang.reflect.Field nameField = IndoorMap.class.getDeclaredField("name");
+      nameField.setAccessible(true);
+      nameField.set(map, name);
+
+      // working file 이 있으면 snapshot 으로 복사 (영구 저장).
+      if (Files.exists(WORKING_DB)) {
+        if (!Files.exists(STORAGE_DIR)) Files.createDirectories(STORAGE_DIR);
+        Path target = STORAGE_DIR.resolve(map.getId() + ".db");
+        Files.copy(WORKING_DB, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        map.recordRtabmapDb(target.toString(), Files.size(target));
+      }
       return mapRepository.save(map);
     } catch (Exception e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "rename failed", e);
     }
   }
 
-  /** 현재 draft 맵 폐기. blob 파일도 같이 삭제. 다음 robot fetch 시 자동으로 새 Untitled 생성. */
+  /**
+   * 현재 맵 폐기.
+   *
+   * <p>snapshot 파일 (/var/indoory/maps/) 이 연결돼 있으면 그것만 삭제. ~/.ros/
+   * rtabmap.db 같은 working file 은 절대 건드리지 않음 (다른 세션 영향 위험).
+   * row 삭제 후 다음 robot fetch 시 새 Untitled 자동 생성.
+   */
   @Transactional
   public void discardMap(Long mapId) {
     IndoorMap map = findMap(mapId);
     String path = map.getRtabmapDbPath();
-    if (path != null) {
+    if (path != null && path.startsWith(STORAGE_DIR.toString())) {
       try { Files.deleteIfExists(Paths.get(path)); } catch (IOException ignored) {}
     }
     mapRepository.delete(map);
