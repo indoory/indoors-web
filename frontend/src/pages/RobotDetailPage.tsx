@@ -9,7 +9,7 @@ import { StatusBadge } from '../components/StatusBadge'
 import {
   dispatchRobot,
   emergencyStopRobot,
-  getCurrentMap,
+  getMap,
   getRobot,
   pauseRobot,
   relocalizeRobot,
@@ -35,13 +35,17 @@ export function RobotDetailPage() {
     refetchInterval: 4_000,
   })
 
+  const robotDetail = robotQuery.data
+  const robotMapId = robotDetail?.robot.mapId
+
+  // 로봇이 가리키는 맵만 로드 (Unknown session 이면 mapId null → skip).
   const mapQuery = useQuery({
-    queryKey: ['map', 'current'],
-    queryFn: getCurrentMap,
+    queryKey: ['map', robotMapId],
+    queryFn: () => (robotMapId ? getMap(robotMapId) : Promise.reject('no map')),
+    enabled: !!robotMapId,
     refetchInterval: 5_000,
   })
 
-  const robotDetail = robotQuery.data
   const currentMap = mapQuery.data
   const currentFloor = currentMap?.floors.find(
     (floor) => floor.code === robotDetail?.robot.floorCode,
@@ -67,7 +71,7 @@ export function RobotDetailPage() {
         queryClient.invalidateQueries({ queryKey: ['robots'] }),
         queryClient.invalidateQueries({ queryKey: ['tasks'] }),
         queryClient.invalidateQueries({ queryKey: ['events'] }),
-        queryClient.invalidateQueries({ queryKey: ['map', 'current'] }),
+        queryClient.invalidateQueries({ queryKey: ['map', robotMapId] }),
       ])
     },
   })

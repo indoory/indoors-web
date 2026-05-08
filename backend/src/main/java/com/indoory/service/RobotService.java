@@ -51,51 +51,43 @@ public class RobotService {
   }
 
   /**
-   * 로봇이 항상 현재 매핑 세션에 대응하는 IndoorMap 을 가지고 있도록 보장.
+   * 로봇이 이미 맵에 묶여 있으면 working DB 크기만 새로고침. 묶여 있지 않으면 (Unknown
+   * session) 그대로 둔다 — 운영자/OCR 이 명시적으로 floor 를 지정해야만 mapId 가 채워진다.
    *
-   * <p>mapId 가 null 이거나 referenced map 이 삭제됐으면 'Untitled-{ts}' 새 row 생성 후 연결.
-   * 새 row 의 rtabmap_db_path 는 ~/.ros/rtabmap.db (working DB) 을 가리키게 함 →
-   * RTAB-Map 의 작업 파일과 RDB row 가 1:1 연결. size 도 매번 fetch 시 갱신해
-   * 사용자가 실시간으로 누적량 확인 가능.
+   * <p>이전 버전은 mapId==null 이면 'Untitled-{ts}' 를 자동 생성해 강제 재연결했으나,
+   * 그게 "맵 삭제 → robot.mapId NULL 화" detach 를 즉시 무효화시켜서 운영자 제어를 빼앗는다.
+   * 더 이상 자동 라벨링 X — Unknown session 은 정당한 상태로 인정.
    */
   @Transactional
   public void ensureCurrentMap(Robot robot) {
+    Long mid = robot.getMapId();
+    if (mid == null) return;
+    var opt = mapRepository.findById(mid);
+    if (opt.isEmpty()) {
+      // 댕글링 참조 — 맵이 사라졌는데 robot.mapId 가 살아있는 (드물지만 가능한) 케이스.
+      // detach 하고 Unknown session 으로 복귀.
+      try {
+        java.lang.reflect.Field f = Robot.class.getDeclaredField("mapId");
+        java.lang.reflect.Field g = Robot.class.getDeclaredField("floorId");
+        f.setAccessible(true); g.setAccessible(true);
+        f.set(robot, null); g.set(robot, null);
+        robotRepository.save(robot);
+      } catch (Exception ignored) {}
+      return;
+    }
+    IndoorMap map = opt.get();
+    // draft 상태(Untitled — snapshot 으로 promote 안 됨)면 working file 크기 갱신.
     java.nio.file.Path workingDb = java.nio.file.Paths.get(
         System.getProperty("user.home"), ".ros", "rtabmap.db");
-    Long mid = robot.getMapId();
-    IndoorMap map;
-    if (mid != null) {
-      var opt = mapRepository.findById(mid);
-      if (opt.isPresent()) {
-        map = opt.get();
-        // draft 상태(Untitled — snapshot 으로 promote 안 됨)면 working file 크기 갱신.
-        boolean isDraft = "Untitled".equals(map.getName())
-            || map.getRtabmapDbPath() == null
-            || map.getRtabmapDbPath().contains(".ros/rtabmap.db");
-        if (isDraft && java.nio.file.Files.exists(workingDb)) {
-          try {
-            map.recordRtabmapDb(workingDb.toString(), java.nio.file.Files.size(workingDb));
-            mapRepository.save(map);
-          } catch (Exception ignored) {}
-        }
-        return;
-      }
-    }
-    // 신규 Untitled 생성 — working file 가리키게.
-    String code = "session-" + System.currentTimeMillis();
-    IndoorMap fresh = new IndoorMap(code, "Untitled");
-    if (java.nio.file.Files.exists(workingDb)) {
+    boolean isDraft = "Untitled".equals(map.getName())
+        || map.getRtabmapDbPath() == null
+        || map.getRtabmapDbPath().contains(".ros/rtabmap.db");
+    if (isDraft && java.nio.file.Files.exists(workingDb)) {
       try {
-        fresh.recordRtabmapDb(workingDb.toString(), java.nio.file.Files.size(workingDb));
+        map.recordRtabmapDb(workingDb.toString(), java.nio.file.Files.size(workingDb));
+        mapRepository.save(map);
       } catch (Exception ignored) {}
     }
-    mapRepository.save(fresh);
-    try {
-      java.lang.reflect.Field f = Robot.class.getDeclaredField("mapId");
-      f.setAccessible(true);
-      f.set(robot, fresh.getId());
-      robotRepository.save(robot);
-    } catch (Exception ignored) {}
   }
 
   @Transactional
@@ -163,6 +155,21 @@ public class RobotService {
     } catch (Exception e) {
       throw new ResponseStatusException(
           HttpStatus.INTERNAL_SERVER_ERROR, "failed to assign mapId", e);
+    }
+  }
+
+  /** 세션 시작 시 floorId 갱신. mapId 와 함께 호출되는 게 일반적. */
+  @Transactional
+  public void assignFloorToRobot(Long robotId, Long floorId) {
+    Robot robot = findRobot(robotId);
+    try {
+      java.lang.reflect.Field f = Robot.class.getDeclaredField("floorId");
+      f.setAccessible(true);
+      f.set(robot, floorId);
+      robotRepository.save(robot);
+    } catch (Exception e) {
+      throw new ResponseStatusException(
+          HttpStatus.INTERNAL_SERVER_ERROR, "failed to assign floorId", e);
     }
   }
 

@@ -33,6 +33,9 @@ public final class ApiDtos {
 
   public record FloorSetRequest(Long floorId) {}
 
+  /** Web 에서 사용자가 층 입력 → 그 층 IndoorMap 자동 로드/생성 + OCR hint set. */
+  public record SessionStartRequest(String floorCode) {}
+
   public record SaveSessionRequest(String name, String code) {}
 
   public record LoadMapRequest(Long mapId) {}
@@ -136,7 +139,6 @@ public final class ApiDtos {
       Long id,
       String code,
       String name,
-      boolean active,
       String nav2YamlUrl,
       String rtabmapDbPath,
       Long rtabmapDbSize,
@@ -169,7 +171,6 @@ public final class ApiDtos {
       Long id,
       String code,
       String name,
-      boolean active,
       String nav2YamlUrl,
       List<FloorResponse> floors,
       List<MapRobotResponse> robots,

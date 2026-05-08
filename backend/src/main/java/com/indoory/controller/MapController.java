@@ -48,7 +48,6 @@ public class MapController {
         map.getId(),
         map.getCode(),
         map.getName(),
-        map.isActive(),
         map.getNav2YamlUrl(),
         map.getRtabmapDbPath(),
         map.getRtabmapDbSize(),
@@ -64,7 +63,6 @@ public class MapController {
         map.getId(),
         map.getCode(),
         map.getName(),
-        map.isActive(),
         map.getNav2YamlUrl(),
         map.getRtabmapDbPath(),
         map.getRtabmapDbSize(),
@@ -86,14 +84,6 @@ public class MapController {
   }
 
   @Operation(
-      summary = "Get current map",
-      description = "Returns the active map with floors, locations, robots, and active tasks.")
-  @GetMapping("/maps/current")
-  public ApiDtos.CurrentMapResponse getCurrentMap() {
-    return mapService.getCurrentMap();
-  }
-
-  @Operation(
       summary = "Get map detail",
       description = "Returns a specific map with floor and active entity overlays.")
   @GetMapping("/maps/{mapId}")
@@ -108,22 +98,6 @@ public class MapController {
   public ApiDtos.MapMetadataResponse setNav2YamlUrl(
       @PathVariable Long mapId, @RequestBody ApiDtos.Nav2YamlUrlRequest request) {
     return mapService.updateNav2YamlUrl(mapId, request.nav2YamlUrl());
-  }
-
-  @Operation(
-      summary = "Activate map",
-      description = "Marks a specific semantic map as the active map.")
-  @PatchMapping("/maps/{mapId}/activate")
-  public void activate(@PathVariable Long mapId) {
-    mapService.activate(mapId);
-  }
-
-  public record MapLoadRequest(Long mapId) {}
-
-  @Operation(summary = "Load map", description = "Loads and activates a specific map by id.")
-  @PostMapping("/maps/load")
-  public void load(@RequestBody MapLoadRequest payload) {
-    mapService.load(payload.mapId());
   }
 
   @Operation(

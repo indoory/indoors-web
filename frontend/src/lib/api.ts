@@ -161,24 +161,13 @@ export function createMap(payload: CreateMapRequest) {
   })
 }
 
-export function getCurrentMap() {
-  return request<CurrentMapResponse>('/api/maps/current')
-}
-
 export function getMap(mapId: number | string) {
   return request<CurrentMapResponse>(`/api/maps/${mapId}`)
 }
 
-export function activateMap(mapId: number | string) {
-  return request<void>(`/api/maps/${mapId}/activate`, {
-    method: 'PATCH',
-  })
-}
-
-export function loadMap(mapId: number | string) {
-  return request<void>('/api/maps/load', {
-    method: 'POST',
-    body: JSON.stringify({ mapId }),
+export function deleteMap(mapId: number | string) {
+  return request<void>(`/api/maps/${mapId}`, {
+    method: 'DELETE',
   })
 }
 
@@ -272,14 +261,17 @@ export interface SystemHealth {
   floor_db_dir?: string
 }
 
-// 텔레옵 디바이스 (xlerobot 모터 버스 / serial leader): 포트 enumerate + connect/disconnect.
+// 텔레옵 디바이스 (xlerobot SO-ARM101 leader 양 팔): 포트 enumerate + arm 별 connect/disconnect.
 // 어댑터 직접 호출 — auth 불필요 (vite /api/system 프록시).
+export type LeaderArm = 'left' | 'right'
+
 export interface SerialPortInfo {
   device: string
   description: string
   hwid: string
   manufacturer: string
   product: string
+  heldBy: LeaderArm | null  // 이미 잡힌 arm — 다른 arm 의 select 에서 disable
 }
 
 export async function listTeleopPorts(): Promise<SerialPortInfo[]> {
@@ -289,28 +281,34 @@ export async function listTeleopPorts(): Promise<SerialPortInfo[]> {
   return j.ports
 }
 
-export async function connectTeleopDevice(port: string, baudrate = 1_000_000) {
+export async function connectTeleopDevice(arm: LeaderArm, port: string, baudrate = 1_000_000) {
   const r = await fetch('/api/system/teleop/connect', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ port, baudrate }),
+    body: JSON.stringify({ arm, port, baudrate }),
   })
   if (!r.ok) throw new ApiError(await r.text(), r.status)
-  return r.json() as Promise<{ ok: boolean; connected: boolean; port: string; baudrate: number }>
+  return r.json() as Promise<{ ok: boolean; arm: LeaderArm; connected: boolean; port: string; baudrate: number }>
 }
 
-export async function disconnectTeleopDevice() {
-  const r = await fetch('/api/system/teleop/disconnect', { method: 'POST' })
+export async function disconnectTeleopDevice(arm: LeaderArm) {
+  const r = await fetch('/api/system/teleop/disconnect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ arm }),
+  })
   if (!r.ok) throw new ApiError(await r.text(), r.status)
-  return r.json() as Promise<{ ok: boolean; connected: boolean }>
+  return r.json() as Promise<{ ok: boolean; arm: LeaderArm; connected: boolean }>
 }
 
-export interface TeleopDeviceStatus {
+export interface TeleopArmStatus {
   connected: boolean
   port: string | null
   baudrate: number | null
   error: string | null
 }
+
+export type TeleopDeviceStatus = Record<LeaderArm, TeleopArmStatus>
 
 export async function getTeleopDeviceStatus(): Promise<TeleopDeviceStatus> {
   const r = await fetch('/api/system/teleop/status')
@@ -333,9 +331,8 @@ export function getSystemHealth(robotId: number | string) {
   return request<SystemHealth>(`/api/robots/${robotId}/system/health`)
 }
 
-// Semantic OCR: 세션 시작 시 1회 호출. floorCode 가 ''이면 OCR floor 필터 off.
-// vite proxy 룰: /api/system/* → adapter:8000. 다른 /api/* 는 Spring:8080 으로
-// 빠져 404 가 됨. 그래서 system prefix 필수.
+// "모르겠음" — Spring 거치지 않고 어댑터로 OCR floor 만 비움. 맵 / robot DB 미변경.
+// vite proxy 룰: /api/system/* → adapter:8000. 다른 /api/* 는 Spring:8080.
 export async function setOcrFloor(floorCode: string, mode: 'reject' | 'complete' = 'reject') {
   const r = await fetch('/api/system/semantic_ocr/floor', {
     method: 'POST',
@@ -344,6 +341,32 @@ export async function setOcrFloor(floorCode: string, mode: 'reject' | 'complete'
   })
   if (!r.ok) throw new ApiError(await r.text(), r.status)
   return r.json() as Promise<{ ok: boolean; floorCode: string; mode: string }>
+}
+
+// 층 모를 때 임시 매핑 시작 — unknown_<ts>.db 별도 파일에 매핑. 기존
+// ~/.ros/rtabmap.db 손상 0. 어댑터 직접 호출 (Spring DB 변경 없음 — 사용자가
+// 나중에 "이건 5F 였어" 명시할 때 비로소 IndoorMap 으로 promote).
+export async function startTempMapping() {
+  const r = await fetch('/api/system/slam/start_temp', { method: 'POST' })
+  if (!r.ok) throw new ApiError(await r.text(), r.status)
+  return r.json() as Promise<{ ok: boolean; mode: string; temp_db_path: string; note: string }>
+}
+
+// 세션 시작: 사용자가 floor 입력. Spring 이 IndoorMap 자동 lookup/create + adapter
+// rtabmap reload/fresh + OCR hint set + robot.mapId/floorId 갱신을 한 번에.
+// 호출 후 ['robots'] / ['system-health'] 쿼리 invalidate 필요.
+export async function startSession(robotId: number | string, floorCode: string) {
+  return request<{
+    ok: boolean
+    mode: 'localization' | 'mapping' | 'mapping_fallback'
+    floorCode: string
+    floorId: number
+    mapId: number
+    mapName: string
+  }>(`/api/robots/${robotId}/session/start`, {
+    method: 'POST',
+    body: JSON.stringify({ floorCode }),
+  })
 }
 
 export function getLivePose(robotId: number | string) {
@@ -416,9 +439,7 @@ export function loadSavedMap(robotId: number | string, mapId: number) {
 }
 
 export function listMaps() {
-  return request<Array<{ id: number; code: string; name: string; active: boolean }>>(
-    '/api/maps',
-  )
+  return request<Array<{ id: number; code: string; name: string }>>('/api/maps')
 }
 
 // ── Maps ─────────────────────────────────────────────────────────────────────

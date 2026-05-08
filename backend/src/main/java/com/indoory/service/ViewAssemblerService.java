@@ -140,7 +140,6 @@ public class ViewAssemblerService {
         map.getId(),
         map.getCode(),
         map.getName(),
-        map.isActive(),
         map.getNav2YamlUrl(),
         map.getRtabmapDbPath(),
         map.getRtabmapDbSize(),

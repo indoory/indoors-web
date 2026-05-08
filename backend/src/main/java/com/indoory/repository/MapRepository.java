@@ -6,5 +6,5 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface MapRepository extends JpaRepository<IndoorMap, Long> {
 
-  Optional<IndoorMap> findFirstByActiveTrue();
+  Optional<IndoorMap> findByCode(String code);
 }

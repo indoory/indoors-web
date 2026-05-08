@@ -44,15 +44,6 @@ public class MapService {
   }
 
   @Transactional(readOnly = true)
-  public ApiDtos.CurrentMapResponse getCurrentMap() {
-    IndoorMap map =
-        mapRepository
-            .findFirstByActiveTrue()
-            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No active map"));
-    return buildMapResponse(map);
-  }
-
-  @Transactional(readOnly = true)
   public ApiDtos.CurrentMapResponse getMap(Long mapId) {
     return buildMapResponse(findMap(mapId));
   }
@@ -76,27 +67,6 @@ public class MapService {
     map.setNav2YamlUrl(nav2YamlUrl);
     mapRepository.save(map);
     return viewAssemblerService.toMapMetadata(map);
-  }
-
-  @Transactional
-  public void activate(Long mapId) {
-    IndoorMap target = findMap(mapId);
-    mapRepository
-        .findAll()
-        .forEach(
-            map -> {
-              if (map.getId().equals(target.getId())) {
-                map.activate();
-              } else {
-                map.deactivate();
-              }
-              mapRepository.save(map);
-            });
-  }
-
-  @Transactional
-  public void load(Long mapId) {
-    activate(mapId);
   }
 
   @Transactional
@@ -298,28 +268,75 @@ public class MapService {
     return sb.toString();
   }
 
+  // 라이브 태스크가 점유 중인 상태들. DONE/CANCELED/FAILED 는 이력일 뿐이라 차단 X.
+  private static final List<TaskStatus> LIVE_TASK_STATUSES =
+      List.of(TaskStatus.CREATED, TaskStatus.ASSIGNED, TaskStatus.RUNNING, TaskStatus.PAUSED);
+
   @Transactional
   public void deleteMap(Long mapId) {
     IndoorMap map = findMap(mapId);
-    if (map.isActive()) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT, "Cannot delete active map");
-    }
-    // Check if there are robots or tasks on this map
-    long robotCount =
-        robotRepository.findAllByOrderByIdAsc().stream()
-            .filter(robot -> robot.getMapId().equals(mapId))
-            .count();
-    if (robotCount > 0) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT, "Cannot delete map with robots");
-    }
-    long taskCount =
+
+    // 라이브 태스크가 점유 중이면 차단 (실제로 이 맵의 좌표계를 쓰며 동작 중).
+    // Robot.mapId 는 차단 사유가 아니다 — 그건 단지 "마지막으로 라벨링된 곳" 메타데이터일 뿐.
+    // 삭제 시 dangling 로봇은 자동 detach (mapId/floorId = NULL → Unknown session 복귀).
+    // OCR / 사용자 입력으로 다음 세션 시작될 때 새로 라벨링됨.
+    long liveTaskCount =
         taskRepository.findAllByOrderByCreatedAtDesc().stream()
-            .filter(task -> task.getMapId().equals(mapId))
+            .filter(task -> java.util.Objects.equals(task.getMapId(), mapId))
+            .filter(task -> LIVE_TASK_STATUSES.contains(task.getStatus()))
             .count();
-    if (taskCount > 0) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT, "Cannot delete map with tasks");
+    if (liveTaskCount > 0) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT,
+          "Cannot delete map: " + liveTaskCount + " live task(s) still in progress");
     }
+
+    // 이 맵을 가리키는 로봇 detach — reflection 으로 mapId/floorId 둘 다 null 화.
+    robotRepository.findAllByOrderByIdAsc().stream()
+        .filter(robot -> java.util.Objects.equals(robot.getMapId(), mapId))
+        .forEach(this::detachRobotFromMap);
+
+    // 이 맵에 묶인 종료된 task 들도 mapId 끊어주기 (FK 가 없어도 정합성 보장).
+    taskRepository.findAllByOrderByCreatedAtDesc().stream()
+        .filter(task -> java.util.Objects.equals(task.getMapId(), mapId))
+        .forEach(this::detachTaskFromMap);
+
+    // snapshot blob 만 삭제. working file (~/.ros/rtabmap.db) 은 공유 자원이라 보존.
+    String path = map.getRtabmapDbPath();
+    if (path != null && path.startsWith(STORAGE_DIR.toString())) {
+      try { Files.deleteIfExists(Paths.get(path)); } catch (IOException ignored) {}
+    }
+
     mapRepository.delete(map);
+  }
+
+  // mapId/floorId 컬럼은 도메인 메서드가 없어서 reflection 으로만 비울 수 있다
+  // (assignMapToRobot 도 같은 방식). 미래에 Robot 에 detach() 메서드 추가하면 정리.
+  private void detachRobotFromMap(com.indoory.entity.Robot robot) {
+    try {
+      var mapField = com.indoory.entity.Robot.class.getDeclaredField("mapId");
+      var floorField = com.indoory.entity.Robot.class.getDeclaredField("floorId");
+      mapField.setAccessible(true);
+      floorField.setAccessible(true);
+      mapField.set(robot, null);
+      floorField.set(robot, null);
+      robotRepository.save(robot);
+    } catch (Exception e) {
+      throw new ResponseStatusException(
+          HttpStatus.INTERNAL_SERVER_ERROR, "failed to detach robot " + robot.getId(), e);
+    }
+  }
+
+  private void detachTaskFromMap(com.indoory.entity.Task task) {
+    try {
+      var mapField = com.indoory.entity.Task.class.getDeclaredField("mapId");
+      mapField.setAccessible(true);
+      mapField.set(task, null);
+      taskRepository.save(task);
+    } catch (Exception e) {
+      throw new ResponseStatusException(
+          HttpStatus.INTERNAL_SERVER_ERROR, "failed to detach task " + task.getId(), e);
+    }
   }
 
   private ApiDtos.CurrentMapResponse buildMapResponse(IndoorMap map) {
@@ -367,7 +384,6 @@ public class MapService {
         map.getId(),
         map.getCode(),
         map.getName(),
-        map.isActive(),
         map.getNav2YamlUrl(),
         floorResponses,
         robots,

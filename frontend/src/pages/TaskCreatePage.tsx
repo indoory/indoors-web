@@ -4,7 +4,7 @@ import { startTransition, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { AppShell } from '../components/AppShell'
 import { LoadingView } from '../components/LoadingView'
-import { createTask, getCurrentMap } from '../lib/api'
+import { createTask, getFloors } from '../lib/api'
 
 const priorities = [
   { value: 'LOW', label: 'Low', color: 'text-slate-600' },
@@ -16,9 +16,9 @@ const priorities = [
 export function TaskCreatePage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const mapQuery = useQuery({
-    queryKey: ['map', 'current'],
-    queryFn: getCurrentMap,
+  const floorsQuery = useQuery({
+    queryKey: ['floors'],
+    queryFn: getFloors,
   })
 
   const [floorCode, setFloorCode] = useState('')
@@ -26,7 +26,7 @@ export function TaskCreatePage() {
   const [dropoffLocationId, setDropoffLocationId] = useState<number | null>(null)
   const [priority, setPriority] = useState('NORMAL')
 
-  const floors = mapQuery.data?.floors ?? []
+  const floors = floorsQuery.data ?? []
   const activeFloorCode = floorCode || floors[0]?.code || ''
   const selectedFloor = floors.find((floor) => floor.code === activeFloorCode) ?? floors[0]
   const selectableLocations =
@@ -51,7 +51,7 @@ export function TaskCreatePage() {
         queryClient.invalidateQueries({ queryKey: ['tasks'] }),
         queryClient.invalidateQueries({ queryKey: ['robots'] }),
         queryClient.invalidateQueries({ queryKey: ['events'] }),
-        queryClient.invalidateQueries({ queryKey: ['map', 'current'] }),
+        queryClient.invalidateQueries({ queryKey: ['floors'] }),
       ])
       startTransition(() => {
         navigate(`/tasks?created=${task?.taskCode ?? 'TSK'}`)
@@ -80,7 +80,7 @@ export function TaskCreatePage() {
         <div className="rounded-xl border border-slate-200 bg-white p-6">
           <h2 className="mb-6 text-lg font-semibold text-slate-900">Create New Task</h2>
 
-          {mapQuery.isLoading ? <LoadingView compact label="Loading active map..." /> : null}
+          {floorsQuery.isLoading ? <LoadingView compact label="Loading floors..." /> : null}
 
           <form
             className="space-y-5"

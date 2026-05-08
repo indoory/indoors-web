@@ -143,7 +143,6 @@ export interface MapMetadata {
   id: number
   code: string
   name: string
-  active: boolean
   nav2YamlUrl?: string | null
   rtabmapDbPath?: string | null
   rtabmapDbSize?: number | null

@@ -12,7 +12,6 @@ import {
   emergencyStopRobot, getLivePose, getMapMeta,
   getRobots, getSystemHealth, getTeleopDeviceStatus, listMaps, listTeleopPorts,
   loadSavedMap, pauseRobot, relocalizeRobot, renameMap, resumeRobot,
-  setOcrFloor,
   startSlamExplore, stopSlam, teleop, type SystemHealth,
 } from '../lib/api'
 
@@ -120,28 +119,55 @@ export function RobotsPage() {
     refetchInterval: 3000,
   })
 
-  // ROS 세션 watcher: poseConnected false→true 가 새 세션 시작.
-  // robot.floorCode 가 채워져 있으면 자동 적용, 없으면 모달.
-  // 끊겼다 다시 연결되면 askedThisSession 가 리셋되어 다시 묻는다.
+  // ── 층 확인 modal 노출 로직 ─────────────────────────────────────────────
+  // 운영자에게 묻는 시점은 정확히 **sim 재기동** + **첫 페이지 load (이 세션
+  // 응답 없음)**. ws disconnect/reconnect 는 새 세션이 아닌 단순 네트워크 글리치라
+  // 매번 묻지 않음. boot detect = sim_secs 가 큰 폭으로 뒤로 점프 (sim time reset).
+  // sessionStorage 로 페이지 새로고침해도 응답 유지 — 단 robotId 단위로.
+  const sessionKey = `floor-asked-${robotId ?? 'unknown'}`
   const [showFloorModal, setShowFloorModal] = useState(false)
-  const [askedThisSession, setAskedThisSession] = useState(false)
-  const lastConnectedRef = useRef(false)
+  const askedRef = useRef(false)
+  const lastSimSecsRef = useRef<number | null>(null)
+
+  // 첫 mount: sessionStorage 응답 기록 있으면 묻지 않음, 없으면 modal 노출.
   useEffect(() => {
-    const wasConnected = lastConnectedRef.current
-    lastConnectedRef.current = poseConnected
-    if (wasConnected || !poseConnected) {
-      if (!poseConnected) setAskedThisSession(false)
+    if (!robotId) return
+    if (sessionStorage.getItem(sessionKey) === '1') {
+      askedRef.current = true
       return
     }
-    // false → true 트랜지션
-    if (askedThisSession) return
-    if (robot?.floorCode) {
-      setOcrFloor(robot.floorCode).catch(() => { /* 무시: param 서버 미준비 등 */ })
-      setAskedThisSession(true)
-    } else {
+    setShowFloorModal(true)
+  }, [robotId, sessionKey])
+
+  // sim 재기동 detect — sim_secs 가 60초 이상 뒤로 점프 → 새 boot → 응답 기록
+  // invalidate + modal 재노출. 정상 sim 진행은 sim_secs 단조 증가라 trigger 안 됨.
+  // 주의: `health` const 는 이 컴포넌트의 더 아래에서 선언되어 TDZ 회피 위해
+  // healthQuery.data?.sim_secs 로 직접 참조.
+  useEffect(() => {
+    const cur = pose.sim_secs ?? healthQuery.data?.sim_secs
+    if (cur == null) return
+    const prev = lastSimSecsRef.current
+    lastSimSecsRef.current = cur
+    if (prev != null && cur < prev - 60) {
+      sessionStorage.removeItem(sessionKey)
+      askedRef.current = false
       setShowFloorModal(true)
     }
-  }, [poseConnected, robot?.floorCode, askedThisSession])
+  }, [pose.sim_secs, healthQuery.data?.sim_secs, sessionKey])
+
+  // 운영자가 맵 삭제로 인해 isDraft 가 false→true 로 전이 — 그땐 한 번 더 묻는다
+  // (세션은 같지만 robot 의 map 컨텍스트가 reset). 단 askedRef 가 false 면 어차피
+  // 첫 mount 의 useEffect 가 처리하므로 여기선 askedRef.current=true 일 때만 재노출.
+  const lastDraftRef = useRef(false)
+  useEffect(() => {
+    const wasDraft = lastDraftRef.current
+    lastDraftRef.current = isDraft
+    if (!wasDraft && isDraft && poseConnected && askedRef.current) {
+      sessionStorage.removeItem(sessionKey)
+      askedRef.current = false
+      setShowFloorModal(true)
+    }
+  }, [isDraft, poseConnected, sessionKey])
 
   const refresh = () => queryClient.invalidateQueries({ predicate: () => true })
 
@@ -282,7 +308,7 @@ export function RobotsPage() {
   const angSpeedRef = useRef(angSpeed)
   useEffect(() => { linSpeedRef.current = linSpeed }, [linSpeed])
   useEffect(() => { angSpeedRef.current = angSpeed }, [angSpeed])
-  const pressKey = useCallback((k: 'w'|'a'|'s'|'d'|'q'|'r', down: boolean) => {
+  const pressKey = useCallback((k: 'w'|'a'|'s'|'d'|'q'|'e', down: boolean) => {
     if (down) pressedRef.current.add(k); else pressedRef.current.delete(k)
     applyTeleopRef.current()
   }, [])
@@ -297,7 +323,7 @@ export function RobotsPage() {
     const isText = (el: EventTarget | null) =>
       el instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)
     const CODE_TO_KEY: Record<string, string> = {
-      KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd', KeyQ: 'q', KeyR: 'r',
+      KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd', KeyQ: 'q', KeyE: 'e',
     }
     const apply = () => {
       const pressed = pressedRef.current
@@ -310,7 +336,7 @@ export function RobotsPage() {
       if (pressed.has('a')) lat += LIN   // 왼쪽 strafe
       if (pressed.has('d')) lat -= LIN   // 오른쪽 strafe
       if (pressed.has('q')) ang += ANG   // 좌회전 (CCW)
-      if (pressed.has('r')) ang -= ANG   // 우회전 (CW)
+      if (pressed.has('e')) ang -= ANG   // 우회전 (CW)
       // (linear, angular, lateral)
       startTeleop(lin, ang, lat)
     }
@@ -320,7 +346,7 @@ export function RobotsPage() {
       const k = CODE_TO_KEY[e.code]
       if (!k) return
       e.preventDefault()
-      pressKey(k as 'w'|'a'|'s'|'d'|'q'|'r', down)
+      pressKey(k as 'w'|'a'|'s'|'d'|'q'|'e', down)
     }
     const dn = (e: KeyboardEvent) => onKey(e, true)
     const up = (e: KeyboardEvent) => onKey(e, false)
@@ -548,7 +574,14 @@ export function RobotsPage() {
       </div>
       {showFloorModal ? (
         <FloorPromptModal
-          onClose={() => { setShowFloorModal(false); setAskedThisSession(true) }}
+          robotId={robotId}
+          initialFloorCode={robot.floorCode}
+          onSessionStarted={refresh}
+          onClose={() => {
+            setShowFloorModal(false)
+            askedRef.current = true
+            try { sessionStorage.setItem(sessionKey, '1') } catch {}
+          }}
         />
       ) : null}
     </AppShell>
@@ -870,7 +903,7 @@ function ActionPanel({
   onSlamStart: () => void
   onSlamStop: () => void
   onCancelEvent: () => void
-  pressKey: (k: 'w'|'a'|'s'|'d'|'q'|'r', down: boolean) => void
+  pressKey: (k: 'w'|'a'|'s'|'d'|'q'|'e', down: boolean) => void
   stopTeleop: () => void
   linSpeed: number
   angSpeed: number
@@ -988,10 +1021,9 @@ function ActionPanel({
   )
 }
 
-// xlerobot 모터 버스 / so101 leader / serial 입력 디바이스를 어댑터에 연결.
-// 어댑터는 직렬 포트 open/close 만 담당 — 디바이스 프로토콜 → cmd_vel 브리지는 별도 단계.
+// xlerobot SO-ARM101 leader 양 팔 (left + right) 각각 USB serial 포트에 연결.
+// 어댑터는 직렬 포트 open/close 만 담당 — 모터 sync_read + ROS publish 는 Phase 3.
 function TeleopDeviceConnector() {
-  const queryClient = useQueryClient()
   const portsQuery = useQuery({
     queryKey: ['teleop-ports'],
     queryFn: listTeleopPorts,
@@ -1005,43 +1037,81 @@ function TeleopDeviceConnector() {
   })
   const ports = portsQuery.data ?? []
   const status = statusQuery.data
-  const connected = !!status?.connected
+  return (
+    <div className="flex flex-col gap-3 text-sm">
+      <ArmSlot arm="left"  ports={ports} status={status?.left}  refetchPorts={() => portsQuery.refetch()} portsFetching={portsQuery.isFetching} />
+      <ArmSlot arm="right" ports={ports} status={status?.right} refetchPorts={() => portsQuery.refetch()} portsFetching={portsQuery.isFetching} />
+      <p className="text-xs leading-snug text-slate-400">
+        SO-ARM101 leader 두 대 각각 USB 연결. baud 1,000,000 (Feetech STS3215). 모터 sync_read + sim 측 follower 매핑은 다음 단계.
+      </p>
+    </div>
+  )
+}
 
+// arm 별 slot — 포트 select / baud / connect-disconnect / 상태 라벨.
+function ArmSlot({ arm, ports, status, refetchPorts, portsFetching }: {
+  arm: import('../lib/api').LeaderArm
+  ports: import('../lib/api').SerialPortInfo[]
+  status: import('../lib/api').TeleopArmStatus | undefined
+  refetchPorts: () => void
+  portsFetching: boolean
+}) {
+  const queryClient = useQueryClient()
+  const connected = !!status?.connected
   const [selectedPort, setSelectedPort] = useState<string>('')
   const [baudrate, setBaudrate] = useState<number>(1_000_000)
   const [errMsg, setErrMsg] = useState<string | null>(null)
 
-  // 포트 목록 첫 로드 시 첫 번째 포트 자동 선택. 이미 연결된 포트가 있으면 그걸 우선.
   useEffect(() => {
     if (connected && status?.port) {
       setSelectedPort(status.port)
       if (status.baudrate) setBaudrate(status.baudrate)
       return
     }
-    if (!selectedPort && ports.length > 0) setSelectedPort(ports[0].device)
-  }, [ports, connected, status?.port, status?.baudrate, selectedPort])
+    // 다른 arm 이 잡지 않은 포트 중 첫 번째 자동 선택
+    if (!selectedPort) {
+      const free = ports.find((p) => p.heldBy === null || p.heldBy === arm)
+      if (free) setSelectedPort(free.device)
+    }
+  }, [ports, connected, status?.port, status?.baudrate, selectedPort, arm])
 
   const connectMut = useMutation({
-    mutationFn: () => connectTeleopDevice(selectedPort, baudrate),
+    mutationFn: () => connectTeleopDevice(arm, selectedPort, baudrate),
     onSuccess: () => {
       setErrMsg(null)
       queryClient.invalidateQueries({ queryKey: ['teleop-device-status'] })
+      queryClient.invalidateQueries({ queryKey: ['teleop-ports'] })
     },
     onError: (e: unknown) => setErrMsg(e instanceof Error ? e.message : '연결 실패'),
   })
   const disconnectMut = useMutation({
-    mutationFn: () => disconnectTeleopDevice(),
+    mutationFn: () => disconnectTeleopDevice(arm),
     onSuccess: () => {
       setErrMsg(null)
       queryClient.invalidateQueries({ queryKey: ['teleop-device-status'] })
+      queryClient.invalidateQueries({ queryKey: ['teleop-ports'] })
     },
     onError: (e: unknown) => setErrMsg(e instanceof Error ? e.message : '해제 실패'),
   })
 
   const busy = connectMut.isPending || disconnectMut.isPending
+  const armLabel = arm === 'left' ? '왼팔' : '오른팔'
+  const accent = arm === 'left' ? 'sky' : 'rose'
 
+  const headerCls = accent === 'sky' ? 'text-sky-700' : 'text-rose-700'
+  const dotCls = accent === 'sky' ? 'bg-sky-500' : 'bg-rose-500'
+  const errFromStatus = status?.error
   return (
-    <div className="flex flex-col gap-2 text-sm">
+    <div className="flex flex-col gap-2 rounded border border-slate-200 bg-slate-50 p-2.5 text-sm">
+      <div className="flex items-center gap-2">
+        <span className={`inline-block h-2 w-2 rounded-full ${dotCls}`} />
+        <span className={`font-semibold ${headerCls}`}>{armLabel}</span>
+        <span className={`ml-auto flex items-center gap-1 text-xs ${connected ? 'text-emerald-600' : 'text-slate-400'}`}>
+          <span className={`inline-block h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+          {connected ? '연결됨' : '미연결'}
+        </span>
+      </div>
+
       {/* 포트 dropdown + 새로고침 */}
       <div className="flex items-center gap-1.5">
         <select
@@ -1051,67 +1121,62 @@ function TeleopDeviceConnector() {
           className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs disabled:bg-slate-100 disabled:text-slate-500"
         >
           {ports.length === 0 && <option value="">— 포트 없음 —</option>}
-          {ports.map((p) => (
-            <option key={p.device} value={p.device}>
-              {p.device}{p.product ? ` · ${p.product}` : p.description ? ` · ${p.description}` : ''}
-            </option>
-          ))}
+          {ports.map((p) => {
+            const lockedByOther = p.heldBy !== null && p.heldBy !== arm
+            return (
+              <option key={p.device} value={p.device} disabled={lockedByOther}>
+                {p.device}
+                {p.product ? ` · ${p.product}` : p.description ? ` · ${p.description}` : ''}
+                {lockedByOther ? ` · (${p.heldBy === 'left' ? '왼팔' : '오른팔'} 사용 중)` : ''}
+              </option>
+            )
+          })}
         </select>
         <button
           type="button"
-          onClick={() => portsQuery.refetch()}
-          disabled={portsQuery.isFetching}
+          onClick={() => refetchPorts()}
+          disabled={portsFetching}
           title="포트 새로고침"
           className="flex h-7 w-7 items-center justify-center rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50"
         >
-          <RefreshCw className={`h-3.5 w-3.5 ${portsQuery.isFetching ? 'animate-spin' : ''}`} />
+          <RefreshCw className={`h-3.5 w-3.5 ${portsFetching ? 'animate-spin' : ''}`} />
         </button>
       </div>
 
-      {/* baudrate */}
+      {/* baudrate + 연결/해제 같은 줄 */}
       <div className="flex items-center gap-2">
-        <span className="text-xs text-slate-500">baud</span>
         <select
           value={baudrate}
           onChange={(e) => setBaudrate(parseInt(e.target.value, 10))}
           disabled={connected || busy}
           className="rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs disabled:bg-slate-100 disabled:text-slate-500"
+          title="baudrate"
         >
-          <option value={1000000}>1,000,000 (Feetech)</option>
-          <option value={500000}>500,000</option>
-          <option value={115200}>115,200</option>
-          <option value={57600}>57,600</option>
-          <option value={9600}>9,600</option>
+          <option value={1000000}>1M (Feetech)</option>
+          <option value={500000}>500k</option>
+          <option value={115200}>115.2k</option>
         </select>
-      </div>
-
-      {/* 연결/해제 버튼 + 상태 */}
-      <div className="flex items-center gap-2">
         {!connected ? (
           <button
             type="button"
             onClick={() => connectMut.mutate()}
             disabled={!selectedPort || busy}
-            className="flex h-8 items-center gap-1.5 rounded border border-emerald-300 bg-emerald-50 px-3 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+            className="ml-auto flex h-7 items-center gap-1 rounded border border-emerald-300 bg-emerald-50 px-2.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Plug className="h-3.5 w-3.5" />
-            {connectMut.isPending ? '연결 중…' : '연결'}
+            {connectMut.isPending ? '연결…' : '연결'}
           </button>
         ) : (
           <button
             type="button"
             onClick={() => disconnectMut.mutate()}
             disabled={busy}
-            className="flex h-8 items-center gap-1.5 rounded border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+            className="ml-auto flex h-7 items-center gap-1 rounded border border-slate-300 bg-white px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
           >
             <Unplug className="h-3.5 w-3.5" />
-            {disconnectMut.isPending ? '해제 중…' : '해제'}
+            {disconnectMut.isPending ? '해제…' : '해제'}
           </button>
         )}
-        <span className={`flex items-center gap-1 text-xs ${connected ? 'text-emerald-600' : 'text-slate-400'}`}>
-          <span className={`inline-block h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-          {connected ? '연결됨' : '미연결'}
-        </span>
       </div>
 
       {connected && status?.port && (
@@ -1119,12 +1184,9 @@ function TeleopDeviceConnector() {
           {status.port} @ {status.baudrate?.toLocaleString()}
         </div>
       )}
-      {errMsg && (
-        <p className="break-all text-xs leading-snug text-red-600">{errMsg}</p>
+      {(errMsg || errFromStatus) && (
+        <p className="break-all text-xs leading-snug text-red-600">{errMsg || errFromStatus}</p>
       )}
-      <p className="text-xs leading-snug text-slate-400">
-        xlerobot 모터 버스 / so101 leader 등 직렬 디바이스. 연결 후 디바이스 프로토콜 브리지는 다음 단계.
-      </p>
     </div>
   )
 }
@@ -1169,7 +1231,7 @@ function ActionRow({
   )
 }
 
-type TeleopKey = 'w'|'a'|'s'|'d'|'q'|'r'
+type TeleopKey = 'w'|'a'|'s'|'d'|'q'|'e'
 
 function ManualTeleop({
   pressKey, stopTeleop, linSpeed, angSpeed, setLinSpeed, setAngSpeed,
@@ -1187,7 +1249,7 @@ function ManualTeleop({
     const isText = (el: EventTarget | null) =>
       el instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)
     const CODE_TO_KEY: Record<string, string> = {
-      KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd', KeyQ: 'q', KeyR: 'r',
+      KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd', KeyQ: 'q', KeyE: 'e',
     }
     const onKey = (e: KeyboardEvent, down: boolean) => {
       if (isText(e.target)) return
@@ -1208,13 +1270,13 @@ function ManualTeleop({
 
   return (
     <div className="flex flex-col gap-3">
-      {/* 키캡:  Q W R          */}
+      {/* 키캡:  Q W E          */}
       {/*        A S D          */}
       <div className="inline-flex flex-col items-center gap-1">
         <div className="flex gap-1">
           <KeyCap k="q" label="Q" held={held} setHeld={setHeld} pressKey={pressKey} stopTeleop={stopTeleop} />
           <KeyCap k="w" label="W" held={held} setHeld={setHeld} pressKey={pressKey} stopTeleop={stopTeleop} />
-          <KeyCap k="r" label="R" held={held} setHeld={setHeld} pressKey={pressKey} stopTeleop={stopTeleop} />
+          <KeyCap k="e" label="E" held={held} setHeld={setHeld} pressKey={pressKey} stopTeleop={stopTeleop} />
         </div>
         <div className="flex gap-1">
           <KeyCap k="a" label="A" held={held} setHeld={setHeld} pressKey={pressKey} stopTeleop={stopTeleop} />
@@ -1417,6 +1479,8 @@ function MapCanvas({
   }, [])
   const [path, setPath] = useState<Array<[number, number]>>([])
   const [frontiers, setFrontiers] = useState<Array<[number, number]>>([])
+  type OcrSpot = { id: string; room_id: string; x: number; y: number; confirmed: boolean; confidence: number; observations: number }
+  const [ocrSpots, setOcrSpots] = useState<OcrSpot[]>([])
   const [show3D, setShow3D] = useState(false)  // nvblox cloud overlay 토글
   const cloudRef = useRef<Float32Array | null>(null)
   const [cloudCount, setCloudCount] = useState(0)
@@ -1609,7 +1673,45 @@ function MapCanvas({
     }
   }, [])
 
-  useEffect(() => { draw() }, [meta, pose, scale, offset, rotation, goalPreview, canvasSize, path, frontiers, cloudCount, show3D])
+  // /ws/ocr — semantic OCR 트랙. 새 detection 도착마다 spot 갱신.
+  useEffect(() => {
+    const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/ocr`
+    let ws: WebSocket | null = null
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let stopped = false
+    const close = () => {
+      if (timer) { clearTimeout(timer); timer = null }
+      if (ws) { try { ws.close() } catch {}; ws = null }
+    }
+    const connect = () => {
+      if (stopped || document.hidden) return
+      ws = new WebSocket(url)
+      ws.onclose = () => {
+        if (stopped || document.hidden) return
+        timer = setTimeout(connect, 2000)
+      }
+      ws.onmessage = (ev) => {
+        if (typeof ev.data !== 'string') return
+        try {
+          const msg = JSON.parse(ev.data) as { tracks: OcrSpot[] }
+          setOcrSpots(msg.tracks || [])
+        } catch {}
+      }
+    }
+    const onVis = () => {
+      if (document.hidden) close()
+      else if (!ws || ws.readyState >= WebSocket.CLOSING) connect()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    connect()
+    return () => {
+      stopped = true
+      document.removeEventListener('visibilitychange', onVis)
+      close()
+    }
+  }, [])
+
+  useEffect(() => { draw() }, [meta, pose, scale, offset, rotation, goalPreview, canvasSize, path, frontiers, cloudCount, show3D, ocrSpots])
 
   // CSS 픽셀 기준 + rotation 역변환. draw() 의 변환 순서: translate(center) → rotate(rot)
   // → scale → drawImage(world). 따라서 역변환: 클릭 px → 중심 빼기 → rotate(-rot) →
@@ -1728,6 +1830,34 @@ function MapCanvas({
         ctx.arc(sx, sy, 5, 0, Math.PI * 2)
         ctx.fill()
         ctx.stroke()
+      }
+      ctx.restore()
+    }
+
+    // semantic OCR 트랙 — 표지판 인식 위치. 확정(2회+) 초록, 후보 노랑. room_id 라벨.
+    if (ocrSpots.length > 0) {
+      ctx.save()
+      for (const spot of ocrSpots) {
+        const sx = cx + (spot.x - cwx) * px
+        const sy = cy - (spot.y - cwy) * px
+        const fill = spot.confirmed ? 'rgba(16,185,129,0.95)' : 'rgba(245,158,11,0.9)'
+        const stroke = spot.confirmed ? '#047857' : '#b45309'
+        ctx.fillStyle = fill
+        ctx.strokeStyle = stroke
+        ctx.lineWidth = 2
+        ctx.beginPath()
+        ctx.arc(sx, sy, 7, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.stroke()
+        if (spot.room_id) {
+          ctx.font = 'bold 12px ui-sans-serif, system-ui, sans-serif'
+          const text = spot.room_id
+          const tw = ctx.measureText(text).width
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.85)'
+          ctx.fillRect(sx + 9, sy - 14, tw + 8, 18)
+          ctx.fillStyle = '#fff'
+          ctx.fillText(text, sx + 13, sy)
+        }
       }
       ctx.restore()
     }
