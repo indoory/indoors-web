@@ -17,6 +17,7 @@ import json
 import os
 import subprocess
 import tempfile
+import io
 from pathlib import Path
 from typing import Optional
 
@@ -34,11 +35,14 @@ log = logging.getLogger('adapter')
 RTABMAP_DB = Path(os.environ.get('RTABMAP_DB', os.path.expanduser('~/.ros/rtabmap.db')))
 FLOOR_DB_DIR = Path(os.environ.get('FLOOR_DB_DIR', '/var/indoory/floor_dbs'))
 SPRING_BASE = os.environ.get('SPRING_BASE_URL', 'http://localhost:8080')
+ROS_SETUP = '/opt/ros/humble/setup.bash'
+GZ_NAV_SIM_ROOT = Path(os.environ.get('GZ_NAV_SIM_ROOT', '/home/fnhid/gz-nav-sim'))
+if not (GZ_NAV_SIM_ROOT / 'install/setup.bash').exists() and Path('/root/gz-nav-sim/install/setup.bash').exists():
+    GZ_NAV_SIM_ROOT = Path('/root/gz-nav-sim')
 SPIN_RELOC_SCRIPT = Path(os.environ.get(
     'SPIN_RELOC_SCRIPT',
-    '/root/gz-nav-sim/bench/spin_and_relocalize.py'))
-ROS_SETUP = '/opt/ros/humble/setup.bash'
-WS_SETUP = '/root/gz-nav-sim/install/setup.bash'
+    str(GZ_NAV_SIM_ROOT / 'bench/spin_and_relocalize.py')))
+WS_SETUP = str(GZ_NAV_SIM_ROOT / 'install/setup.bash')
 
 FLOOR_DB_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -56,6 +60,7 @@ _pose_cache: dict = {'available': False}
 _topics_cache: dict = {'topics': [], 'fetched_at': 0.0}
 _map_cache: dict = {'available': False}  # OccupancyGrid 메타 + 데이터
 _camera_cache: dict = {'data': b''}      # /camera/image_raw/compressed 의 jpeg bytes
+_depth_cache: dict = {'data': b'', 'updated_at': 0.0, 'encoding': ''}  # depth image -> JPEG color map
 _path_cache: dict = {'points': [], 'updated_at': 0.0}  # Nav2 /plan 의 (x,y) 리스트
 _clock_cache: dict = {'sim_secs': 0.0, 'updated_at': 0.0}  # /clock (rosgraph_msgs/Clock)
 _frontier_cache: dict = {'points': [], 'updated_at': 0.0}  # explore_lite frontier candidates
@@ -68,6 +73,7 @@ _ros_node_thread: Optional[threading.Thread] = None
 _map_event = threading.Event()
 _pose_event = threading.Event()
 _camera_event = threading.Event()
+_depth_event = threading.Event()
 _path_event = threading.Event()
 _frontier_event = threading.Event()
 _cloud_event = threading.Event()
@@ -79,6 +85,56 @@ _goal_pose_pub = None
 _spin_active = False
 
 
+def _depth_image_to_jpeg(msg) -> Optional[bytes]:
+    """Convert a ROS depth Image into a compact browser-friendly JPEG."""
+    try:
+        import numpy as np
+        from PIL import Image
+    except Exception as exc:
+        log.warning('depth jpeg disabled — numpy/Pillow import failed: %s', exc)
+        return None
+
+    enc = (getattr(msg, 'encoding', '') or '').lower()
+    width = int(getattr(msg, 'width', 0))
+    height = int(getattr(msg, 'height', 0))
+    if width <= 0 or height <= 0:
+        return None
+
+    if '32fc1' in enc:
+        dtype = np.dtype('>f4' if getattr(msg, 'is_bigendian', 0) else '<f4')
+        arr = np.frombuffer(bytes(msg.data), dtype=dtype)
+        row = max(1, int(msg.step) // dtype.itemsize)
+        meters = arr.reshape(height, row)[:, :width].astype(np.float32, copy=False)
+    elif '16uc1' in enc or 'mono16' in enc or enc in ('16u', 'uint16'):
+        dtype = np.dtype('>u2' if getattr(msg, 'is_bigendian', 0) else '<u2')
+        arr = np.frombuffer(bytes(msg.data), dtype=dtype)
+        row = max(1, int(msg.step) // dtype.itemsize)
+        meters = arr.reshape(height, row)[:, :width].astype(np.float32) * 0.001
+    else:
+        return None
+
+    valid = np.isfinite(meters) & (meters > 0.05)
+    norm = np.zeros((height, width), dtype=np.uint8)
+    if valid.any():
+        values = meters[valid]
+        lo = float(values.min())
+        hi = float(np.percentile(values, 99))
+        if hi - lo < 0.05:
+            hi = lo + 0.05
+        norm[valid] = np.clip((meters[valid] - lo) * (255.0 / (hi - lo)), 0, 255).astype(np.uint8)
+
+    # Lightweight false-color map without an OpenCV dependency in the adapter venv.
+    rgb = np.zeros((height, width, 3), dtype=np.uint8)
+    rgb[..., 0] = norm
+    rgb[..., 1] = np.clip(255 - np.abs(norm.astype(np.int16) - 128) * 2, 0, 255).astype(np.uint8)
+    rgb[..., 2] = 255 - norm
+    rgb[~valid] = 0
+    image = Image.fromarray(rgb, 'RGB')
+    buf = io.BytesIO()
+    image.save(buf, format='JPEG', quality=80)
+    return buf.getvalue()
+
+
 def _start_ros_subscriber() -> None:
     """별도 스레드에서 rclpy spin. /odom 구독해 latest 캐시."""
     global _pose_cache
@@ -88,7 +144,7 @@ def _start_ros_subscriber() -> None:
         from rclpy.node import Node
         from nav_msgs.msg import Odometry, OccupancyGrid, Path
         from geometry_msgs.msg import Twist, PoseStamped
-        from sensor_msgs.msg import CompressedImage, PointCloud2
+        from sensor_msgs.msg import CompressedImage, Image, PointCloud2
         from rosgraph_msgs.msg import Clock
         from visualization_msgs.msg import MarkerArray
         from std_msgs.msg import String as StdString
@@ -153,6 +209,23 @@ def _start_ros_subscriber() -> None:
     qos_cam = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
                          reliability=ReliabilityPolicy.BEST_EFFORT)
     node.create_subscription(CompressedImage, '/camera/image_raw/compressed', cam_cb, qos_cam)
+
+    # D456 depth stream — convert to JPEG color map for the browser panel.
+    _last_depth_push = [0.0]
+    def depth_cb(msg) -> None:
+        now = _time.time()
+        if now - _last_depth_push[0] < 0.2:
+            return
+        jpg = _depth_image_to_jpeg(msg)
+        if not jpg:
+            return
+        _depth_cache['data'] = jpg
+        _depth_cache['updated_at'] = now
+        _depth_cache['encoding'] = getattr(msg, 'encoding', '')
+        _depth_event.set()
+        _last_depth_push[0] = now
+    node.create_subscription(Image, '/d456/depth/image_raw', depth_cb, qos_cam)
+    node.create_subscription(Image, '/camera/depth/image_raw', depth_cb, qos_cam)
 
     # Nav2 /plan (현재 글로벌 경로) — 이벤트 진행 중 시각화용.
     def path_cb(msg) -> None:
@@ -339,7 +412,7 @@ def _ros_param_set(node: str, name: str, value: str, timeout_s: int = 4) -> tupl
 # launch 에 들어있는 동일한 lifecycle 시퀀스 (configure → activate) 를 재사용하기 위해
 # launch_slam_node.launch.py 같은 별도 launch 가 필요. 간단히 async_slam_toolbox_node 를
 # 직접 띄우고 lifecycle CLI 로 configure/activate.
-SLAM_PARAMS = '/root/gz-nav-sim/install/gz_nav_sim/share/gz_nav_sim/config/slam_params.yaml'
+SLAM_PARAMS = str(GZ_NAV_SIM_ROOT / 'install/gz_nav_sim/share/gz_nav_sim/config/slam_params.yaml')
 _slam_proc: Optional[subprocess.Popen] = None
 
 
@@ -1270,7 +1343,8 @@ def system_health():
     # 실제 데이터 흐름 기준 (단순 토픽 존재 X). /odom 과 /map 은 영속 구독자가
     # 캐시하므로 그 신선도로 판단. 나머지는 우선 토픽 list 기반 (개선 여지 있음).
     expected = ['/odom', '/scan', '/map', '/tf', '/tf_static',
-                '/camera/image_raw', '/d456/depth/image_raw',
+                '/camera/image_raw', '/camera/image_raw/compressed',
+                '/d456/depth/image_raw', '/semantic_ocr/detections',
                 '/rtabmap/info', '/rtabmap/grid_map']
     topic_status: dict[str, bool] = {}
     for t in expected:
@@ -1280,6 +1354,14 @@ def system_health():
         elif t == '/map':
             age = now - (_map_cache.get('updated_at') or 0)
             topic_status[t] = _map_cache.get('available', False) and age < 30
+        elif t == '/camera/image_raw/compressed':
+            topic_status[t] = bool(_camera_cache.get('data'))
+        elif t == '/d456/depth/image_raw':
+            age = now - (_depth_cache.get('updated_at') or 0)
+            topic_status[t] = bool(_depth_cache.get('data')) and age < 5
+        elif t == '/semantic_ocr/detections':
+            age = now - (_ocr_cache.get('updated_at') or 0)
+            topic_status[t] = (_ocr_cache.get('updated_at', 0) > 0 and age < 30) or t in ros_topics
         else:
             topic_status[t] = t in ros_topics
 
@@ -1360,6 +1442,17 @@ def map_png():
         return Response(content=buf.getvalue(), media_type='image/png')
     except Exception as e:
         return Response(content=str(e).encode(), status_code=500)
+
+
+@app.get('/api/system/depth.jpg')
+def depth_jpg():
+    """Return the latest depth frame as a JPEG color map."""
+    from fastapi.responses import Response
+    _ensure_subscriber()
+    data = _depth_cache.get('data')
+    if not data:
+        return Response(status_code=204)
+    return Response(content=data, media_type='image/jpeg')
 
 
 def _grid_to_png_bytes() -> Optional[bytes]:
@@ -1555,6 +1648,27 @@ async def ws_camera(ws: WebSocket):
         pass
     except Exception as e:
         log.warning('ws_camera error: %s', e)
+
+
+@app.websocket('/ws/depth')
+async def ws_depth(ws: WebSocket):
+    """Live depth stream. Pushes JPEG color maps from /d456/depth/image_raw."""
+    await ws.accept()
+    _ensure_subscriber()
+    last_seen = 0.0
+    try:
+        while True:
+            up = _depth_cache.get('updated_at', 0.0)
+            if up != last_seen and _depth_cache.get('data'):
+                last_seen = up
+                await ws.send_bytes(_depth_cache['data'])
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: _depth_event.wait(timeout=2.0))
+            _depth_event.clear()
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log.warning('ws_depth error: %s', e)
 
 
 @app.get('/api/system/last_pose')

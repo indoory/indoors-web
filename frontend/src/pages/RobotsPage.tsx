@@ -741,7 +741,7 @@ function KV({ k, v, vClass }: { k: string; v: React.ReactNode; vClass?: string }
 }
 
 // ── Camera (real data-flow) ───────────────────────────────────────────────
-function CameraView() {
+function SensorTile({ label, path }: { label: string; path: string }) {
   const [imgUrl, setImgUrl] = useState<string | null>(null)
   const [lastFrame, setLastFrame] = useState(0)
   const [, force] = useState(0)
@@ -752,7 +752,7 @@ function CameraView() {
   useEffect(() => {
     // 탭이 hidden 일 때는 WS 끊어 카메라 stream 자체를 멈춤 (대역폭 절약).
     // 다시 visible 되면 재연결. 서버는 새로 push 시작.
-    const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/camera`
+    const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${path}`
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let stopped = false
@@ -788,17 +788,20 @@ function CameraView() {
       document.removeEventListener('visibilitychange', onVis)
       close()
     }
-  }, [])
-  const ageMs = Date.now() - lastFrame
+  }, [path])
+  const ageMs = lastFrame > 0 ? Date.now() - lastFrame : Infinity
   const live = lastFrame > 0 && ageMs < 2000
   return (
-    <div>
-      <div className="aspect-video w-full bg-slate-900">
+    <div className="min-w-0 bg-slate-950">
+      <div className="relative aspect-video w-full">
         {imgUrl
           ? <img src={imgUrl} alt="" className="h-full w-full object-contain" />
           : <div className="flex h-full items-center justify-center font-mono text-xs text-slate-500">no signal</div>}
+        <div className="absolute left-1 top-1 rounded bg-slate-950/75 px-1.5 py-0.5 font-mono text-[10px] uppercase text-slate-100">
+          {label}
+        </div>
       </div>
-      <div className="flex items-center justify-between border-t border-slate-200 px-3 py-1 font-mono text-xs">
+      <div className="flex items-center justify-between border-t border-slate-800 px-2 py-1 font-mono text-[10px]">
         <span className={live ? 'text-emerald-600' : 'text-slate-400'}>
           {live ? '● live' : '○ no signal'}
         </span>
@@ -806,6 +809,15 @@ function CameraView() {
           {lastFrame > 0 ? `${(ageMs / 1000).toFixed(1)}s ago` : ''}
         </span>
       </div>
+    </div>
+  )
+}
+
+function CameraView() {
+  return (
+    <div className="grid grid-cols-2 gap-px bg-slate-200">
+      <SensorTile label="rgb" path="/ws/camera" />
+      <SensorTile label="depth" path="/ws/depth" />
     </div>
   )
 }
