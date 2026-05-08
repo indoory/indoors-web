@@ -17,6 +17,7 @@ import json
 import os
 import subprocess
 import tempfile
+import io
 from pathlib import Path
 from typing import Optional
 
@@ -34,11 +35,14 @@ log = logging.getLogger('adapter')
 RTABMAP_DB = Path(os.environ.get('RTABMAP_DB', os.path.expanduser('~/.ros/rtabmap.db')))
 FLOOR_DB_DIR = Path(os.environ.get('FLOOR_DB_DIR', '/var/indoory/floor_dbs'))
 SPRING_BASE = os.environ.get('SPRING_BASE_URL', 'http://localhost:8080')
+ROS_SETUP = '/opt/ros/humble/setup.bash'
+GZ_NAV_SIM_ROOT = Path(os.environ.get('GZ_NAV_SIM_ROOT', '/home/fnhid/gz-nav-sim'))
+if not (GZ_NAV_SIM_ROOT / 'install/setup.bash').exists() and Path('/root/gz-nav-sim/install/setup.bash').exists():
+    GZ_NAV_SIM_ROOT = Path('/root/gz-nav-sim')
 SPIN_RELOC_SCRIPT = Path(os.environ.get(
     'SPIN_RELOC_SCRIPT',
-    '/root/gz-nav-sim/bench/spin_and_relocalize.py'))
-ROS_SETUP = '/opt/ros/humble/setup.bash'
-WS_SETUP = '/root/gz-nav-sim/install/setup.bash'
+    str(GZ_NAV_SIM_ROOT / 'bench/spin_and_relocalize.py')))
+WS_SETUP = str(GZ_NAV_SIM_ROOT / 'install/setup.bash')
 
 FLOOR_DB_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -56,7 +60,9 @@ _pose_cache: dict = {'available': False}
 _topics_cache: dict = {'topics': [], 'fetched_at': 0.0}
 _map_cache: dict = {'available': False}  # OccupancyGrid 메타 + 데이터
 _camera_cache: dict = {'data': b''}      # /camera/image_raw/compressed 의 jpeg bytes
+_depth_cache: dict = {'data': b'', 'updated_at': 0.0, 'encoding': ''}  # depth image -> JPEG color map
 _path_cache: dict = {'points': [], 'updated_at': 0.0}  # Nav2 /plan 의 (x,y) 리스트
+_trajectory_cache: dict = {'points': [], 'updated_at': 0.0}  # 실제 주행 /trajectory
 _clock_cache: dict = {'sim_secs': 0.0, 'updated_at': 0.0}  # /clock (rosgraph_msgs/Clock)
 _frontier_cache: dict = {'points': [], 'updated_at': 0.0}  # explore_lite frontier candidates
 _cloud_cache: dict = {'data': b'', 'count': 0, 'updated_at': 0.0}  # nvblox PointCloud2 → float32 (x,y,z) raw bytes
@@ -68,7 +74,9 @@ _ros_node_thread: Optional[threading.Thread] = None
 _map_event = threading.Event()
 _pose_event = threading.Event()
 _camera_event = threading.Event()
+_depth_event = threading.Event()
 _path_event = threading.Event()
+_trajectory_event = threading.Event()
 _frontier_event = threading.Event()
 _cloud_event = threading.Event()
 _ocr_event = threading.Event()
@@ -77,6 +85,56 @@ _cmd_vel_pub = None
 _goal_pose_pub = None
 # 단순 회전 (reloc UX 명목) 진행 중 플래그. cancel_event 에서 끄면 즉시 종료.
 _spin_active = False
+
+
+def _depth_image_to_jpeg(msg) -> Optional[bytes]:
+    """Convert a ROS depth Image into a compact browser-friendly JPEG."""
+    try:
+        import numpy as np
+        from PIL import Image
+    except Exception as exc:
+        log.warning('depth jpeg disabled — numpy/Pillow import failed: %s', exc)
+        return None
+
+    enc = (getattr(msg, 'encoding', '') or '').lower()
+    width = int(getattr(msg, 'width', 0))
+    height = int(getattr(msg, 'height', 0))
+    if width <= 0 or height <= 0:
+        return None
+
+    if '32fc1' in enc:
+        dtype = np.dtype('>f4' if getattr(msg, 'is_bigendian', 0) else '<f4')
+        arr = np.frombuffer(bytes(msg.data), dtype=dtype)
+        row = max(1, int(msg.step) // dtype.itemsize)
+        meters = arr.reshape(height, row)[:, :width].astype(np.float32, copy=False)
+    elif '16uc1' in enc or 'mono16' in enc or enc in ('16u', 'uint16'):
+        dtype = np.dtype('>u2' if getattr(msg, 'is_bigendian', 0) else '<u2')
+        arr = np.frombuffer(bytes(msg.data), dtype=dtype)
+        row = max(1, int(msg.step) // dtype.itemsize)
+        meters = arr.reshape(height, row)[:, :width].astype(np.float32) * 0.001
+    else:
+        return None
+
+    valid = np.isfinite(meters) & (meters > 0.05)
+    norm = np.zeros((height, width), dtype=np.uint8)
+    if valid.any():
+        values = meters[valid]
+        lo = float(values.min())
+        hi = float(np.percentile(values, 99))
+        if hi - lo < 0.05:
+            hi = lo + 0.05
+        norm[valid] = np.clip((meters[valid] - lo) * (255.0 / (hi - lo)), 0, 255).astype(np.uint8)
+
+    # Lightweight false-color map without an OpenCV dependency in the adapter venv.
+    rgb = np.zeros((height, width, 3), dtype=np.uint8)
+    rgb[..., 0] = norm
+    rgb[..., 1] = np.clip(255 - np.abs(norm.astype(np.int16) - 128) * 2, 0, 255).astype(np.uint8)
+    rgb[..., 2] = 255 - norm
+    rgb[~valid] = 0
+    image = Image.fromarray(rgb, 'RGB')
+    buf = io.BytesIO()
+    image.save(buf, format='JPEG', quality=80)
+    return buf.getvalue()
 
 
 def _start_ros_subscriber() -> None:
@@ -88,10 +146,11 @@ def _start_ros_subscriber() -> None:
         from rclpy.node import Node
         from nav_msgs.msg import Odometry, OccupancyGrid, Path
         from geometry_msgs.msg import Twist, PoseStamped
-        from sensor_msgs.msg import CompressedImage, PointCloud2
+        from sensor_msgs.msg import CompressedImage, Image, PointCloud2
         from rosgraph_msgs.msg import Clock
         from visualization_msgs.msg import MarkerArray
         from std_msgs.msg import String as StdString
+        from tf2_ros import Buffer, TransformListener
     except Exception as e:
         log.warning('rclpy import failed — cache disabled: %s', e)
         return
@@ -101,22 +160,41 @@ def _start_ros_subscriber() -> None:
     except RuntimeError:
         pass  # 이미 init 됨 (uvicorn --reload 가 모듈 다시 import 한 경우 등)
     node = Node('indoory_adapter_telemetry')
+    tf_buffer = Buffer()
+    TransformListener(tf_buffer, node)
 
     def odom_cb(msg: Odometry) -> None:
         global _pose_cache
+        import math
         p = msg.pose.pose
         o = p.orientation
-        import math
+        frame = msg.header.frame_id
+        # MapCanvas, /map, OCR markers, /trajectory all use the map frame.
+        # /odom is still useful as a heartbeat, but drawing odom coordinates
+        # on a map-frame canvas makes the current robot position drift/offset.
+        try:
+            tf = tf_buffer.lookup_transform('map', 'base_footprint', rclpy.time.Time())
+            p = tf.transform
+            o = p.rotation
+            x = p.translation.x
+            y = p.translation.y
+            z = p.translation.z
+            frame = 'map'
+        except Exception:
+            x = p.position.x
+            y = p.position.y
+            z = p.position.z
         yaw = math.atan2(2 * (o.w * o.z + o.x * o.y),
                          1 - 2 * (o.y * o.y + o.z * o.z))
         _pose_cache = {
             'available': True,
-            'x': p.position.x,
-            'y': p.position.y,
-            'z': p.position.z,
+            'x': x,
+            'y': y,
+            'z': z,
             'yaw_rad': yaw,
             'yaw_deg': math.degrees(yaw),
-            'frame': msg.header.frame_id,
+            'frame': frame,
+            'source_frame': msg.header.frame_id,
             'updated_at': _time.time(),
         }
         _pose_event.set()
@@ -154,6 +232,23 @@ def _start_ros_subscriber() -> None:
                          reliability=ReliabilityPolicy.BEST_EFFORT)
     node.create_subscription(CompressedImage, '/camera/image_raw/compressed', cam_cb, qos_cam)
 
+    # D456 depth stream — convert to JPEG color map for the browser panel.
+    _last_depth_push = [0.0]
+    def depth_cb(msg) -> None:
+        now = _time.time()
+        if now - _last_depth_push[0] < 0.2:
+            return
+        jpg = _depth_image_to_jpeg(msg)
+        if not jpg:
+            return
+        _depth_cache['data'] = jpg
+        _depth_cache['updated_at'] = now
+        _depth_cache['encoding'] = getattr(msg, 'encoding', '')
+        _depth_event.set()
+        _last_depth_push[0] = now
+    node.create_subscription(Image, '/d456/depth/image_raw', depth_cb, qos_cam)
+    node.create_subscription(Image, '/camera/depth/image_raw', depth_cb, qos_cam)
+
     # Nav2 /plan (현재 글로벌 경로) — 이벤트 진행 중 시각화용.
     def path_cb(msg) -> None:
         pts = [(ps.pose.position.x, ps.pose.position.y) for ps in msg.poses]
@@ -163,6 +258,18 @@ def _start_ros_subscriber() -> None:
     qos_path = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
                           reliability=ReliabilityPolicy.RELIABLE)
     node.create_subscription(Path, '/plan', path_cb, qos_path)
+
+    # 실제 주행 궤적. trajectory_path_node 가 transient_local 로 publish 하므로
+    # adapter 가 늦게 붙어도 최근 궤적을 즉시 받을 수 있게 durability 를 맞춘다.
+    def trajectory_cb(msg) -> None:
+        pts = [(ps.pose.position.x, ps.pose.position.y) for ps in msg.poses]
+        _trajectory_cache['points'] = pts
+        _trajectory_cache['updated_at'] = _time.time()
+        _trajectory_event.set()
+    qos_trajectory = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
+                                reliability=ReliabilityPolicy.RELIABLE,
+                                durability=DurabilityPolicy.TRANSIENT_LOCAL)
+    node.create_subscription(Path, '/trajectory', trajectory_cb, qos_trajectory)
 
     # /clock — gazebo sim_time. 우하단 status bar 표시용.
     def clock_cb(msg) -> None:
@@ -339,7 +446,7 @@ def _ros_param_set(node: str, name: str, value: str, timeout_s: int = 4) -> tupl
 # launch 에 들어있는 동일한 lifecycle 시퀀스 (configure → activate) 를 재사용하기 위해
 # launch_slam_node.launch.py 같은 별도 launch 가 필요. 간단히 async_slam_toolbox_node 를
 # 직접 띄우고 lifecycle CLI 로 configure/activate.
-SLAM_PARAMS = '/root/gz-nav-sim/install/gz_nav_sim/share/gz_nav_sim/config/slam_params.yaml'
+SLAM_PARAMS = str(GZ_NAV_SIM_ROOT / 'install/gz_nav_sim/share/gz_nav_sim/config/slam_params.yaml')
 _slam_proc: Optional[subprocess.Popen] = None
 
 
@@ -1269,8 +1376,9 @@ def system_health():
 
     # 실제 데이터 흐름 기준 (단순 토픽 존재 X). /odom 과 /map 은 영속 구독자가
     # 캐시하므로 그 신선도로 판단. 나머지는 우선 토픽 list 기반 (개선 여지 있음).
-    expected = ['/odom', '/scan', '/map', '/tf', '/tf_static',
-                '/camera/image_raw', '/d456/depth/image_raw',
+    expected = ['/odom', '/scan', '/map', '/trajectory', '/tf', '/tf_static',
+                '/camera/image_raw', '/camera/image_raw/compressed',
+                '/d456/depth/image_raw', '/semantic_ocr/detections',
                 '/rtabmap/info', '/rtabmap/grid_map']
     topic_status: dict[str, bool] = {}
     for t in expected:
@@ -1280,6 +1388,16 @@ def system_health():
         elif t == '/map':
             age = now - (_map_cache.get('updated_at') or 0)
             topic_status[t] = _map_cache.get('available', False) and age < 30
+        elif t == '/trajectory':
+            topic_status[t] = bool(_trajectory_cache.get('points')) or t in ros_topics
+        elif t == '/camera/image_raw/compressed':
+            topic_status[t] = bool(_camera_cache.get('data'))
+        elif t == '/d456/depth/image_raw':
+            age = now - (_depth_cache.get('updated_at') or 0)
+            topic_status[t] = bool(_depth_cache.get('data')) and age < 5
+        elif t == '/semantic_ocr/detections':
+            age = now - (_ocr_cache.get('updated_at') or 0)
+            topic_status[t] = (_ocr_cache.get('updated_at', 0) > 0 and age < 30) or t in ros_topics
         else:
             topic_status[t] = t in ros_topics
 
@@ -1360,6 +1478,17 @@ def map_png():
         return Response(content=buf.getvalue(), media_type='image/png')
     except Exception as e:
         return Response(content=str(e).encode(), status_code=500)
+
+
+@app.get('/api/system/depth.jpg')
+def depth_jpg():
+    """Return the latest depth frame as a JPEG color map."""
+    from fastapi.responses import Response
+    _ensure_subscriber()
+    data = _depth_cache.get('data')
+    if not data:
+        return Response(status_code=204)
+    return Response(content=data, media_type='image/jpeg')
 
 
 def _grid_to_png_bytes() -> Optional[bytes]:
@@ -1515,6 +1644,30 @@ async def ws_path(ws: WebSocket):
         log.warning('ws_path error: %s', e)
 
 
+@app.websocket('/ws/trajectory')
+async def ws_trajectory(ws: WebSocket):
+    """실제 주행 /trajectory. MapCanvas 가 로봇이 지나온 경로로 표시한다."""
+    await ws.accept()
+    _ensure_subscriber()
+    last_seen = 0.0
+    try:
+        while True:
+            up = _trajectory_cache.get('updated_at', 0)
+            if up != last_seen:
+                last_seen = up
+                await ws.send_json({
+                    'points': _trajectory_cache['points'],
+                    'updated_at': up,
+                })
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: _trajectory_event.wait(timeout=2.0))
+            _trajectory_event.clear()
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log.warning('ws_trajectory error: %s', e)
+
+
 @app.websocket('/ws/ocr')
 async def ws_ocr(ws: WebSocket):
     """semantic OCR 트랙 라이브 stream. 새 detection 이 도착하면 [{x, y, room_id,
@@ -1555,6 +1708,27 @@ async def ws_camera(ws: WebSocket):
         pass
     except Exception as e:
         log.warning('ws_camera error: %s', e)
+
+
+@app.websocket('/ws/depth')
+async def ws_depth(ws: WebSocket):
+    """Live depth stream. Pushes JPEG color maps from /d456/depth/image_raw."""
+    await ws.accept()
+    _ensure_subscriber()
+    last_seen = 0.0
+    try:
+        while True:
+            up = _depth_cache.get('updated_at', 0.0)
+            if up != last_seen and _depth_cache.get('data'):
+                last_seen = up
+                await ws.send_bytes(_depth_cache['data'])
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: _depth_event.wait(timeout=2.0))
+            _depth_event.clear()
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log.warning('ws_depth error: %s', e)
 
 
 @app.get('/api/system/last_pose')

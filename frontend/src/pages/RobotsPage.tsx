@@ -741,7 +741,7 @@ function KV({ k, v, vClass }: { k: string; v: React.ReactNode; vClass?: string }
 }
 
 // ── Camera (real data-flow) ───────────────────────────────────────────────
-function CameraView() {
+function SensorTile({ label, path }: { label: string; path: string }) {
   const [imgUrl, setImgUrl] = useState<string | null>(null)
   const [lastFrame, setLastFrame] = useState(0)
   const [, force] = useState(0)
@@ -752,7 +752,7 @@ function CameraView() {
   useEffect(() => {
     // 탭이 hidden 일 때는 WS 끊어 카메라 stream 자체를 멈춤 (대역폭 절약).
     // 다시 visible 되면 재연결. 서버는 새로 push 시작.
-    const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/camera`
+    const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${path}`
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let stopped = false
@@ -788,17 +788,20 @@ function CameraView() {
       document.removeEventListener('visibilitychange', onVis)
       close()
     }
-  }, [])
-  const ageMs = Date.now() - lastFrame
+  }, [path])
+  const ageMs = lastFrame > 0 ? Date.now() - lastFrame : Infinity
   const live = lastFrame > 0 && ageMs < 2000
   return (
-    <div>
-      <div className="aspect-video w-full bg-slate-900">
+    <div className="min-w-0 bg-slate-950">
+      <div className="relative aspect-video w-full">
         {imgUrl
           ? <img src={imgUrl} alt="" className="h-full w-full object-contain" />
           : <div className="flex h-full items-center justify-center font-mono text-xs text-slate-500">no signal</div>}
+        <div className="absolute left-1 top-1 rounded bg-slate-950/75 px-1.5 py-0.5 font-mono text-[10px] uppercase text-slate-100">
+          {label}
+        </div>
       </div>
-      <div className="flex items-center justify-between border-t border-slate-200 px-3 py-1 font-mono text-xs">
+      <div className="flex items-center justify-between border-t border-slate-800 px-2 py-1 font-mono text-[10px]">
         <span className={live ? 'text-emerald-600' : 'text-slate-400'}>
           {live ? '● live' : '○ no signal'}
         </span>
@@ -806,6 +809,15 @@ function CameraView() {
           {lastFrame > 0 ? `${(ageMs / 1000).toFixed(1)}s ago` : ''}
         </span>
       </div>
+    </div>
+  )
+}
+
+function CameraView() {
+  return (
+    <div className="grid grid-cols-2 gap-px bg-slate-200">
+      <SensorTile label="rgb" path="/ws/camera" />
+      <SensorTile label="depth" path="/ws/depth" />
     </div>
   )
 }
@@ -1478,6 +1490,7 @@ function MapCanvas({
     setScale(1); setOffset({ x: 0, y: 0 }); setRotation(0); setTilt(0)
   }, [])
   const [path, setPath] = useState<Array<[number, number]>>([])
+  const [trajectory, setTrajectory] = useState<Array<[number, number]>>([])
   const [frontiers, setFrontiers] = useState<Array<[number, number]>>([])
   type OcrSpot = { id: string; room_id: string; x: number; y: number; confirmed: boolean; confidence: number; observations: number }
   const [ocrSpots, setOcrSpots] = useState<OcrSpot[]>([])
@@ -1577,6 +1590,44 @@ function MapCanvas({
         try {
           const msg = JSON.parse(ev.data) as { points: Array<[number, number]> }
           setPath(msg.points || [])
+        } catch {}
+      }
+    }
+    const onVis = () => {
+      if (document.hidden) close()
+      else if (!ws || ws.readyState >= WebSocket.CLOSING) connect()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    connect()
+    return () => {
+      stopped = true
+      document.removeEventListener('visibilitychange', onVis)
+      close()
+    }
+  }, [])
+
+  // /ws/trajectory — 실제 주행 궤적. Nav2 계획(/plan)과 별개로 계속 유지된다.
+  useEffect(() => {
+    const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/trajectory`
+    let ws: WebSocket | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let stopped = false
+    const close = () => {
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+      if (ws) { try { ws.close() } catch {}; ws = null }
+    }
+    const connect = () => {
+      if (stopped || document.hidden) return
+      ws = new WebSocket(url)
+      ws.onclose = () => {
+        if (stopped || document.hidden) return
+        reconnectTimer = setTimeout(connect, 2000)
+      }
+      ws.onmessage = (ev) => {
+        if (typeof ev.data !== 'string') return
+        try {
+          const msg = JSON.parse(ev.data) as { points: Array<[number, number]> }
+          setTrajectory(msg.points || [])
         } catch {}
       }
     }
@@ -1711,7 +1762,7 @@ function MapCanvas({
     }
   }, [])
 
-  useEffect(() => { draw() }, [meta, pose, scale, offset, rotation, goalPreview, canvasSize, path, frontiers, cloudCount, show3D, ocrSpots])
+  useEffect(() => { draw() }, [meta, pose, scale, offset, rotation, goalPreview, canvasSize, path, trajectory, frontiers, cloudCount, show3D, ocrSpots])
 
   // CSS 픽셀 기준 + rotation 역변환. draw() 의 변환 순서: translate(center) → rotate(rot)
   // → scale → drawImage(world). 따라서 역변환: 클릭 px → 중심 빼기 → rotate(-rot) →
@@ -1859,6 +1910,27 @@ function MapCanvas({
           ctx.fillText(text, sx + 13, sy)
         }
       }
+      ctx.restore()
+    }
+
+    // 실제 주행 궤적 — /trajectory. 계획 경로(/plan)와 달리 idle 상태에서도 유지된다.
+    if (trajectory.length > 1) {
+      ctx.save()
+      ctx.strokeStyle = '#0f766e'
+      ctx.lineWidth = 3
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      ctx.shadowColor = 'rgba(15, 118, 110, 0.22)'
+      ctx.shadowBlur = 4
+      ctx.beginPath()
+      let first = true
+      for (const [wx, wy] of trajectory) {
+        const sx = cx + (wx - cwx) * px
+        const sy = cy - (wy - cwy) * px
+        if (first) { ctx.moveTo(sx, sy); first = false }
+        else ctx.lineTo(sx, sy)
+      }
+      ctx.stroke()
       ctx.restore()
     }
 
