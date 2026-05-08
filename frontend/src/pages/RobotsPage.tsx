@@ -1490,6 +1490,7 @@ function MapCanvas({
     setScale(1); setOffset({ x: 0, y: 0 }); setRotation(0); setTilt(0)
   }, [])
   const [path, setPath] = useState<Array<[number, number]>>([])
+  const [trajectory, setTrajectory] = useState<Array<[number, number]>>([])
   const [frontiers, setFrontiers] = useState<Array<[number, number]>>([])
   type OcrSpot = { id: string; room_id: string; x: number; y: number; confirmed: boolean; confidence: number; observations: number }
   const [ocrSpots, setOcrSpots] = useState<OcrSpot[]>([])
@@ -1589,6 +1590,44 @@ function MapCanvas({
         try {
           const msg = JSON.parse(ev.data) as { points: Array<[number, number]> }
           setPath(msg.points || [])
+        } catch {}
+      }
+    }
+    const onVis = () => {
+      if (document.hidden) close()
+      else if (!ws || ws.readyState >= WebSocket.CLOSING) connect()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    connect()
+    return () => {
+      stopped = true
+      document.removeEventListener('visibilitychange', onVis)
+      close()
+    }
+  }, [])
+
+  // /ws/trajectory — 실제 주행 궤적. Nav2 계획(/plan)과 별개로 계속 유지된다.
+  useEffect(() => {
+    const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/trajectory`
+    let ws: WebSocket | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let stopped = false
+    const close = () => {
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+      if (ws) { try { ws.close() } catch {}; ws = null }
+    }
+    const connect = () => {
+      if (stopped || document.hidden) return
+      ws = new WebSocket(url)
+      ws.onclose = () => {
+        if (stopped || document.hidden) return
+        reconnectTimer = setTimeout(connect, 2000)
+      }
+      ws.onmessage = (ev) => {
+        if (typeof ev.data !== 'string') return
+        try {
+          const msg = JSON.parse(ev.data) as { points: Array<[number, number]> }
+          setTrajectory(msg.points || [])
         } catch {}
       }
     }
@@ -1723,7 +1762,7 @@ function MapCanvas({
     }
   }, [])
 
-  useEffect(() => { draw() }, [meta, pose, scale, offset, rotation, goalPreview, canvasSize, path, frontiers, cloudCount, show3D, ocrSpots])
+  useEffect(() => { draw() }, [meta, pose, scale, offset, rotation, goalPreview, canvasSize, path, trajectory, frontiers, cloudCount, show3D, ocrSpots])
 
   // CSS 픽셀 기준 + rotation 역변환. draw() 의 변환 순서: translate(center) → rotate(rot)
   // → scale → drawImage(world). 따라서 역변환: 클릭 px → 중심 빼기 → rotate(-rot) →
@@ -1871,6 +1910,27 @@ function MapCanvas({
           ctx.fillText(text, sx + 13, sy)
         }
       }
+      ctx.restore()
+    }
+
+    // 실제 주행 궤적 — /trajectory. 계획 경로(/plan)와 달리 idle 상태에서도 유지된다.
+    if (trajectory.length > 1) {
+      ctx.save()
+      ctx.strokeStyle = '#0f766e'
+      ctx.lineWidth = 3
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      ctx.shadowColor = 'rgba(15, 118, 110, 0.22)'
+      ctx.shadowBlur = 4
+      ctx.beginPath()
+      let first = true
+      for (const [wx, wy] of trajectory) {
+        const sx = cx + (wx - cwx) * px
+        const sy = cy - (wy - cwy) * px
+        if (first) { ctx.moveTo(sx, sy); first = false }
+        else ctx.lineTo(sx, sy)
+      }
+      ctx.stroke()
       ctx.restore()
     }
 

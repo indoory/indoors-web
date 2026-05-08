@@ -62,6 +62,7 @@ _map_cache: dict = {'available': False}  # OccupancyGrid 메타 + 데이터
 _camera_cache: dict = {'data': b''}      # /camera/image_raw/compressed 의 jpeg bytes
 _depth_cache: dict = {'data': b'', 'updated_at': 0.0, 'encoding': ''}  # depth image -> JPEG color map
 _path_cache: dict = {'points': [], 'updated_at': 0.0}  # Nav2 /plan 의 (x,y) 리스트
+_trajectory_cache: dict = {'points': [], 'updated_at': 0.0}  # 실제 주행 /trajectory
 _clock_cache: dict = {'sim_secs': 0.0, 'updated_at': 0.0}  # /clock (rosgraph_msgs/Clock)
 _frontier_cache: dict = {'points': [], 'updated_at': 0.0}  # explore_lite frontier candidates
 _cloud_cache: dict = {'data': b'', 'count': 0, 'updated_at': 0.0}  # nvblox PointCloud2 → float32 (x,y,z) raw bytes
@@ -75,6 +76,7 @@ _pose_event = threading.Event()
 _camera_event = threading.Event()
 _depth_event = threading.Event()
 _path_event = threading.Event()
+_trajectory_event = threading.Event()
 _frontier_event = threading.Event()
 _cloud_event = threading.Event()
 _ocr_event = threading.Event()
@@ -148,6 +150,7 @@ def _start_ros_subscriber() -> None:
         from rosgraph_msgs.msg import Clock
         from visualization_msgs.msg import MarkerArray
         from std_msgs.msg import String as StdString
+        from tf2_ros import Buffer, TransformListener
     except Exception as e:
         log.warning('rclpy import failed — cache disabled: %s', e)
         return
@@ -157,22 +160,41 @@ def _start_ros_subscriber() -> None:
     except RuntimeError:
         pass  # 이미 init 됨 (uvicorn --reload 가 모듈 다시 import 한 경우 등)
     node = Node('indoory_adapter_telemetry')
+    tf_buffer = Buffer()
+    TransformListener(tf_buffer, node)
 
     def odom_cb(msg: Odometry) -> None:
         global _pose_cache
+        import math
         p = msg.pose.pose
         o = p.orientation
-        import math
+        frame = msg.header.frame_id
+        # MapCanvas, /map, OCR markers, /trajectory all use the map frame.
+        # /odom is still useful as a heartbeat, but drawing odom coordinates
+        # on a map-frame canvas makes the current robot position drift/offset.
+        try:
+            tf = tf_buffer.lookup_transform('map', 'base_footprint', rclpy.time.Time())
+            p = tf.transform
+            o = p.rotation
+            x = p.translation.x
+            y = p.translation.y
+            z = p.translation.z
+            frame = 'map'
+        except Exception:
+            x = p.position.x
+            y = p.position.y
+            z = p.position.z
         yaw = math.atan2(2 * (o.w * o.z + o.x * o.y),
                          1 - 2 * (o.y * o.y + o.z * o.z))
         _pose_cache = {
             'available': True,
-            'x': p.position.x,
-            'y': p.position.y,
-            'z': p.position.z,
+            'x': x,
+            'y': y,
+            'z': z,
             'yaw_rad': yaw,
             'yaw_deg': math.degrees(yaw),
-            'frame': msg.header.frame_id,
+            'frame': frame,
+            'source_frame': msg.header.frame_id,
             'updated_at': _time.time(),
         }
         _pose_event.set()
@@ -236,6 +258,18 @@ def _start_ros_subscriber() -> None:
     qos_path = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
                           reliability=ReliabilityPolicy.RELIABLE)
     node.create_subscription(Path, '/plan', path_cb, qos_path)
+
+    # 실제 주행 궤적. trajectory_path_node 가 transient_local 로 publish 하므로
+    # adapter 가 늦게 붙어도 최근 궤적을 즉시 받을 수 있게 durability 를 맞춘다.
+    def trajectory_cb(msg) -> None:
+        pts = [(ps.pose.position.x, ps.pose.position.y) for ps in msg.poses]
+        _trajectory_cache['points'] = pts
+        _trajectory_cache['updated_at'] = _time.time()
+        _trajectory_event.set()
+    qos_trajectory = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
+                                reliability=ReliabilityPolicy.RELIABLE,
+                                durability=DurabilityPolicy.TRANSIENT_LOCAL)
+    node.create_subscription(Path, '/trajectory', trajectory_cb, qos_trajectory)
 
     # /clock — gazebo sim_time. 우하단 status bar 표시용.
     def clock_cb(msg) -> None:
@@ -1342,7 +1376,7 @@ def system_health():
 
     # 실제 데이터 흐름 기준 (단순 토픽 존재 X). /odom 과 /map 은 영속 구독자가
     # 캐시하므로 그 신선도로 판단. 나머지는 우선 토픽 list 기반 (개선 여지 있음).
-    expected = ['/odom', '/scan', '/map', '/tf', '/tf_static',
+    expected = ['/odom', '/scan', '/map', '/trajectory', '/tf', '/tf_static',
                 '/camera/image_raw', '/camera/image_raw/compressed',
                 '/d456/depth/image_raw', '/semantic_ocr/detections',
                 '/rtabmap/info', '/rtabmap/grid_map']
@@ -1354,6 +1388,8 @@ def system_health():
         elif t == '/map':
             age = now - (_map_cache.get('updated_at') or 0)
             topic_status[t] = _map_cache.get('available', False) and age < 30
+        elif t == '/trajectory':
+            topic_status[t] = bool(_trajectory_cache.get('points')) or t in ros_topics
         elif t == '/camera/image_raw/compressed':
             topic_status[t] = bool(_camera_cache.get('data'))
         elif t == '/d456/depth/image_raw':
@@ -1606,6 +1642,30 @@ async def ws_path(ws: WebSocket):
         pass
     except Exception as e:
         log.warning('ws_path error: %s', e)
+
+
+@app.websocket('/ws/trajectory')
+async def ws_trajectory(ws: WebSocket):
+    """실제 주행 /trajectory. MapCanvas 가 로봇이 지나온 경로로 표시한다."""
+    await ws.accept()
+    _ensure_subscriber()
+    last_seen = 0.0
+    try:
+        while True:
+            up = _trajectory_cache.get('updated_at', 0)
+            if up != last_seen:
+                last_seen = up
+                await ws.send_json({
+                    'points': _trajectory_cache['points'],
+                    'updated_at': up,
+                })
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: _trajectory_event.wait(timeout=2.0))
+            _trajectory_event.clear()
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log.warning('ws_trajectory error: %s', e)
 
 
 @app.websocket('/ws/ocr')
