@@ -277,6 +277,90 @@ public class RobotController {
     }
   }
 
+  @Operation(
+      summary = "Start session on a floor",
+      description =
+          "사용자가 입력한 floorCode (예: '5F', 'B3F') 로 세션 시작. 같은 코드의 IndoorMap"
+              + " 이 있으면 blob 로드 (localization), 없으면 IndoorMap+Floor 새로 생성하고"
+              + " adapter 에 fresh-mapping 신호. 마지막에 OCR floor hint 도 갱신.")
+  @PostMapping("/{robotId}/session/start")
+  public Map<String, Object> startSession(
+      @PathVariable Long robotId, @RequestBody ApiDtos.SessionStartRequest request) {
+    String code = request.floorCode() == null ? "" : request.floorCode().trim();
+    if (code.isEmpty()) {
+      throw new IllegalArgumentException("floorCode required (use OCR-only endpoint for empty)");
+    }
+    String displayName = "FLOOR " + code.replaceAll("F$", "").replace("B", "B");
+
+    // 1) IndoorMap (code 기준) — 있으면 그대로, 없으면 생성.
+    IndoorMap map = mapRepository
+        .findByCode(code)
+        .orElseGet(() -> {
+          IndoorMap fresh = new IndoorMap(code, displayName);
+          return mapRepository.save(fresh);
+        });
+
+    // 2) Floor 서브로우 — IndoorMap 이 새로 생성된 경우 함께 생성.
+    //    code 매칭으로 1차 시도, 없으면 만든다. orderIndex 는 음수면 지하층 정렬.
+    Floor floor = floorRepository.findAllByMapIdOrderByOrderIndexAsc(map.getId()).stream()
+        .filter(f -> code.equalsIgnoreCase(f.getCode()))
+        .findFirst()
+        .orElseGet(() -> {
+          int order = parseOrderIndex(code);
+          return floorRepository.save(new Floor(map.getId(), code, displayName, order));
+        });
+
+    // 3) adapter: blob 있으면 load (localization), 없으면 fresh.
+    String mode;
+    if (map.getRtabmapDbPath() != null) {
+      try {
+        byte[] blob = java.nio.file.Files.readAllBytes(
+            java.nio.file.Paths.get(map.getRtabmapDbPath()));
+        adapterClient.setFloor(code, blob);
+        mode = "localization";
+      } catch (java.io.IOException e) {
+        adapterClient.setFloorFresh(code);
+        mode = "mapping_fallback";
+      }
+    } else {
+      adapterClient.setFloorFresh(code);
+      mode = "mapping";
+    }
+
+    // 4) Robot 에 mapId / floorId 저장 → mapName 이 UI 에서 'Unknown' 안 됨.
+    robotService.assignMapToRobot(robotId, map.getId());
+    robotService.assignFloorToRobot(robotId, floor.getId());
+
+    // 5) OCR floor hint set.
+    adapterClient.setOcrFloor(code);
+
+    // 6) SLAM 시작 — 사용자 멘탈모델 ("층 선택 = 세션 시작")에 맞게 slam_toolbox
+    //    자동 spawn. 이미 떠있으면 noop. 이거 빠지면 /map 토픽 비어서 UI 가 빈 화면.
+    adapterClient.startSlam();
+
+    return Map.of(
+        "ok", true,
+        "mode", mode,
+        "floorCode", code,
+        "floorId", floor.getId(),
+        "mapId", map.getId(),
+        "mapName", map.getName(),
+        "slamStarted", true);
+  }
+
+  /** "5F" → 5, "B3F" → -3, "13F" → 13. */
+  private static int parseOrderIndex(String code) {
+    String upper = code.toUpperCase().replaceAll("F$", "");
+    boolean basement = upper.startsWith("B");
+    String digits = basement ? upper.substring(1) : upper;
+    try {
+      int n = Integer.parseInt(digits);
+      return basement ? -n : n;
+    } catch (NumberFormatException e) {
+      return 0;
+    }
+  }
+
   @Operation(summary = "Delete robot", description = "Deletes a robot.")
   @DeleteMapping("/{robotId}")
   public void deleteRobot(@PathVariable Long robotId, Authentication authentication) {

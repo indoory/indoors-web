@@ -9,3 +9,6 @@ httptools==0.6.1
 numpy==1.26.4
 # 텔레옵 디바이스 (xlerobot 모터 버스 / serial 입력) 포트 enumerate + open
 pyserial==3.5
+# Feetech STS3215 모터 프로토콜 — SO-ARM101 leader 양 팔 sync_read("Present_Position").
+# torch 의존 없는 minimal SDK (PortHandler/PacketHandler/GroupSyncRead 만).
+feetech-servo-sdk==1.0.0

@@ -134,6 +134,14 @@ public class RobotAdapterClient {
         Map.of("floorCode", floorCode));
   }
 
+  /** OCR floor hint 갱신. 빈 문자열이면 필터 off (default). */
+  public void setOcrFloor(String floorCode) {
+    if (!properties.isEnabled()) return;
+    post(
+        "/api/system/semantic_ocr/floor",
+        Map.of("floorCode", floorCode == null ? "" : floorCode, "mode", "reject"));
+  }
+
   /** 회전·재로컬 트리거. 어댑터가 동기 spin 후 수렴 여부 JSON 반환. */
   public Map<String, Object> relocalize() {
     if (!properties.isEnabled()) return Map.of("converged", false, "skipped", true);

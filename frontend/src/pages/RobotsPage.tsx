@@ -1481,7 +1481,7 @@ function MapCanvas({
   const [frontiers, setFrontiers] = useState<Array<[number, number]>>([])
   type OcrSpot = { id: string; room_id: string; x: number; y: number; confirmed: boolean; confidence: number; observations: number }
   const [ocrSpots, setOcrSpots] = useState<OcrSpot[]>([])
-  const [show3D, setShow3D] = useState(false)  // nvblox cloud overlay 토글
+  const [show3D, setShow3D] = useState(true)   // nvblox cloud overlay 디폴트 ON
   const cloudRef = useRef<Float32Array | null>(null)
   const [cloudCount, setCloudCount] = useState(0)
 

@@ -144,6 +144,8 @@ public class MapService {
    */
   @Transactional
   public IndoorMap createMapFromCurrentSession(String name, String code) {
+    // 매번 새 row 생성. 이름 중복 허용 — 사용자가 같은 이름으로 여러 번 저장하면
+    // 그만큼 row 가 늘어나며 각자 별도 id 와 blob 을 가짐 (버전처럼 동작).
     String resolvedCode = (code == null || code.isBlank())
         ? "map-" + System.currentTimeMillis() : code;
     IndoorMap map = new IndoorMap(resolvedCode, name);
