@@ -3,6 +3,9 @@ package com.indoory.service;
 import com.indoory.controller.ApiDtos;
 import com.indoory.entity.*;
 import com.indoory.entity.Enum.TaskStage;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -96,10 +99,12 @@ public class ViewAssemblerService {
     return new ApiDtos.CommandLogResponse(
         command.getId(),
         command.getCreatedAt(),
+        command.getUpdatedAt(),
         command.getCommandType().name(),
         command.getParameters(),
         command.getStatus().name(),
-        command.getIssuedBy());
+        command.getIssuedBy(),
+        command.getResult());
   }
 
   public ApiDtos.EventLogResponse toEventLog(EventLog event, Robot robot, Task task) {
@@ -136,13 +141,29 @@ public class ViewAssemblerService {
   }
 
   public ApiDtos.MapMetadataResponse toMapMetadata(IndoorMap map) {
+    // RTAB-Map 이 redirect 후 maps/{id}.db 에 직접 incremental write 하므로
+    // entity 의 rtabmapDbSize 컬럼은 마지막 explicit save 시점에 멈춰있음.
+    // 라이브 진행 반영하려면 매 read 시 디스크 stat 으로 실측. 100+ 맵 list
+    // 호출 시 100 stat 부담은 미미 (~1ms total). 파일 없으면 cached 값 fallback.
+    Long liveSize = map.getRtabmapDbSize();
+    String path = map.getRtabmapDbPath();
+    if (path != null) {
+      try {
+        Path p = Paths.get(path);
+        if (Files.exists(p)) {
+          liveSize = Files.size(p);
+        }
+      } catch (Exception ignored) {
+        // 디스크 read 실패 시 cached 값 그대로.
+      }
+    }
     return new ApiDtos.MapMetadataResponse(
         map.getId(),
         map.getCode(),
         map.getName(),
         map.getNav2YamlUrl(),
         map.getRtabmapDbPath(),
-        map.getRtabmapDbSize(),
+        liveSize,
         map.getRtabmapDbSavedAt());
   }
 

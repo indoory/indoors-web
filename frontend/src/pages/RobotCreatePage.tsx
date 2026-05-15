@@ -19,7 +19,7 @@ export function RobotCreatePage() {
   const [poseY, setPoseY] = useState('0.0')
   const [error, setError] = useState<string | null>(null)
 
-  const maps = mapsQuery.data ?? []
+  const maps = mapsQuery.data?.maps ?? []
   const floors = floorsQuery.data ?? []
 
   const mutation = useMutation({

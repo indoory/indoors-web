@@ -75,19 +75,11 @@ public class RobotService {
       } catch (Exception ignored) {}
       return;
     }
-    IndoorMap map = opt.get();
-    // draft 상태(Untitled — snapshot 으로 promote 안 됨)면 working file 크기 갱신.
-    java.nio.file.Path workingDb = java.nio.file.Paths.get(
-        System.getProperty("user.home"), ".ros", "rtabmap.db");
-    boolean isDraft = "Untitled".equals(map.getName())
-        || map.getRtabmapDbPath() == null
-        || map.getRtabmapDbPath().contains(".ros/rtabmap.db");
-    if (isDraft && java.nio.file.Files.exists(workingDb)) {
-      try {
-        map.recordRtabmapDb(workingDb.toString(), java.nio.file.Files.size(workingDb));
-        mapRepository.save(map);
-      } catch (Exception ignored) {}
-    }
+    // 옛날 버전은 path 가 ".ros/rtabmap.db" 면 isDraft=true 로 보고 매번 working DB
+    // 로 path 갱신했는데, 이게 promote 후 STORAGE_DIR/{id}.db 로 옮긴 path 를
+    // 다음 getRobots() 호출이 다시 working DB 로 덮어쓰는 sticky bug 였음.
+    // 이제는 ensureCurrentMap 이 path 를 변경하지 않음 — promote/adopt 시점에
+    // 한 번 set 된 path 가 그대로 유지된다. row 갱신은 명시적 save 시점에만.
   }
 
   @Transactional
@@ -170,6 +162,51 @@ public class RobotService {
     } catch (Exception e) {
       throw new ResponseStatusException(
           HttpStatus.INTERNAL_SERVER_ERROR, "failed to assign floorId", e);
+    }
+  }
+
+  /** 컨트롤러가 robot.mapId 만 가볍게 조회할 때 사용. 외부 노출 OK. */
+  @Transactional(readOnly = true)
+  public Long getRobotMapId(Long robotId) {
+    return findRobot(robotId).getMapId();
+  }
+
+  /** ROS 재시작 신호 — 모든 robot detach. adapter `_on_startup` 이 호출.
+   *  반환 = detach 된 robot 수 (디버그/로그용). */
+  @Transactional
+  public int detachAllRobots() {
+    int count = 0;
+    for (Robot robot : robotRepository.findAll()) {
+      try {
+        var mapField = Robot.class.getDeclaredField("mapId");
+        var floorField = Robot.class.getDeclaredField("floorId");
+        mapField.setAccessible(true);
+        floorField.setAccessible(true);
+        mapField.set(robot, null);
+        floorField.set(robot, null);
+        robotRepository.save(robot);
+        count++;
+      } catch (Exception ignored) {}
+    }
+    return count;
+  }
+
+  /** Robot.mapId/floorId 둘 다 NULL 화 — Unknown session 강제 (운영자가 '다른 층으로'
+   *  명시할 때 호출). 다음 health 응답에서 isDraft=true → frontend modal 자동 노출. */
+  @Transactional
+  public void detachRobotMapAndFloor(Long robotId) {
+    Robot robot = findRobot(robotId);
+    try {
+      var mapField = Robot.class.getDeclaredField("mapId");
+      var floorField = Robot.class.getDeclaredField("floorId");
+      mapField.setAccessible(true);
+      floorField.setAccessible(true);
+      mapField.set(robot, null);
+      floorField.set(robot, null);
+      robotRepository.save(robot);
+    } catch (Exception e) {
+      throw new ResponseStatusException(
+          HttpStatus.INTERNAL_SERVER_ERROR, "failed to detach robot " + robotId, e);
     }
   }
 

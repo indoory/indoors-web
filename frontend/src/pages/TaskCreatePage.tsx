@@ -29,8 +29,9 @@ export function TaskCreatePage() {
   const floors = floorsQuery.data ?? []
   const activeFloorCode = floorCode || floors[0]?.code || ''
   const selectedFloor = floors.find((floor) => floor.code === activeFloorCode) ?? floors[0]
+  // PARCEL_PICKUP 은 시스템 전역 집하 거점 역할 — pickup/dropoff 셀렉트에서는 제외.
   const selectableLocations =
-    selectedFloor?.locations.filter((location) => location.type !== 'CORRIDOR') ?? []
+    selectedFloor?.locations.filter((location) => location.type !== 'PARCEL_PICKUP') ?? []
   const selectedPickupLocationId = pickupLocationId ?? selectableLocations[0]?.id ?? null
   const selectedDropoffLocationId =
     dropoffLocationId ??

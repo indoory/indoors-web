@@ -77,10 +77,13 @@ public class MapController {
     mapService.discardMap(mapId);
   }
 
-  @Operation(summary = "List maps", description = "Returns all semantic map metadata entries.")
+  @Operation(
+      summary = "List maps",
+      description =
+          "Returns map list wrapped with system-wide PARCEL_PICKUP count for the list-page badge.")
   @GetMapping("/maps")
-  public List<ApiDtos.MapMetadataResponse> getMaps() {
-    return mapService.getMaps();
+  public ApiDtos.MapsListResponse getMaps() {
+    return mapService.getMapsList();
   }
 
   @Operation(
@@ -156,5 +159,16 @@ public class MapController {
         .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"map" + mapId + ".db\"")
         .contentType(MediaType.APPLICATION_OCTET_STREAM)
         .body(blob);
+  }
+
+  @Operation(
+      summary = "Refresh RTAB-Map DB metadata",
+      description =
+          "RTAB-Map 이 maps/{id}.db 에 직접 incremental write 한 경우, entity 의 "
+              + "rtabmapDbSize/SavedAt 컬럼은 마지막 explicit save 시점에 멈춰있음. "
+              + "이 endpoint 는 디스크 stat 만 다시 읽어 컬럼 갱신. 파일 자체는 안 건드림.")
+  @PostMapping("/maps/{mapId}/refresh-metadata")
+  public ApiDtos.MapMetadataResponse refreshMetadata(@PathVariable Long mapId) {
+    return mapService.refreshRtabmapDbMetadata(mapId);
   }
 }

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  ArrowLeft,
+  AlertTriangle,
   Database,
   HardDrive,
   Layers,
@@ -9,11 +9,10 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { AppShell } from '../components/AppShell'
 import { LoadingView } from '../components/LoadingView'
-import { MapCanvas } from '../components/MapCanvas'
-import { StatusBadge } from '../components/StatusBadge'
-import { ApiError, createMap, deleteMap, getMap, getMaps } from '../lib/api'
+import { ApiError, createMap, deleteMap, getMaps } from '../lib/api'
 import type { MapMetadata } from '../types/api'
 
 function formatBytes(bytes?: number | null): string {
@@ -38,22 +37,16 @@ function formatDate(iso?: string | null): string {
 }
 
 export function MapsPage() {
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [selectedMapId, setSelectedMapId] = useState<number | null>(null)
   const [isCreating, setIsCreating] = useState(false)
   const [newMapName, setNewMapName] = useState('')
   const [newMapCode, setNewMapCode] = useState('')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
   const mapsQuery = useQuery({ queryKey: ['maps'], queryFn: getMaps, refetchInterval: 10_000 })
-  const maps = mapsQuery.data ?? []
-
-  const detailQuery = useQuery({
-    queryKey: ['map', selectedMapId],
-    queryFn: () => (selectedMapId ? getMap(selectedMapId) : Promise.reject('No map')),
-    enabled: !!selectedMapId,
-    refetchInterval: 5_000,
-  })
+  const maps = mapsQuery.data?.maps ?? []
+  const parcelPickupCount = mapsQuery.data?.parcelPickupCount ?? 0
 
   const createMutation = useMutation({
     mutationFn: () => {
@@ -74,9 +67,8 @@ export function MapsPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (mapId: number) => deleteMap(mapId),
-    onSuccess: (_, mapId) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['maps'] })
-      if (selectedMapId === mapId) setSelectedMapId(null)
       setErrorMessage(null)
     },
     onError: (err) => {
@@ -101,165 +93,6 @@ export function MapsPage() {
     deleteMutation.mutate(map.id)
   }
 
-  const selectedMap = selectedMapId ? maps.find((m) => m.id === selectedMapId) : null
-  const showDetail = !!selectedMapId
-
-  // ── Detail view ─────────────────────────────────────────────────
-  if (showDetail) {
-    const detail = detailQuery.data
-    const floor = detail?.floors[0]
-    const robots = detail?.robots ?? []
-    const tasks = detail?.activeTasks ?? []
-    const locationById = new Map(floor?.locations.map((l) => [l.id, l]) ?? [])
-
-    return (
-      <AppShell subtitle="Detailed view of the selected map." title={selectedMap?.name ?? 'Map'}>
-        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-          <button
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
-            onClick={() => setSelectedMapId(null)}
-          >
-            <ArrowLeft className="h-4 w-4" />
-            맵 목록
-          </button>
-          <button
-            className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50 disabled:opacity-50"
-            disabled={!selectedMap || deleteMutation.isPending}
-            onClick={() => selectedMap && handleDelete(selectedMap)}
-            title="맵 삭제"
-          >
-            <Trash2 className="h-4 w-4" />
-            삭제
-          </button>
-        </div>
-
-        {errorMessage ? (
-          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            {errorMessage}
-          </div>
-        ) : null}
-
-        {detailQuery.isLoading || !detail ? (
-          <LoadingView compact label="Loading map detail…" />
-        ) : (
-          <div className="space-y-5">
-            {/* Map summary block */}
-            <section className="rounded-xl border border-slate-200 bg-white p-5">
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-                <div>
-                  <div className="text-xs font-medium uppercase tracking-wide text-slate-400">코드</div>
-                  <div className="mt-1 truncate font-mono text-sm text-slate-900">{detail.code}</div>
-                </div>
-                <div>
-                  <div className="text-xs font-medium uppercase tracking-wide text-slate-400">RTAB-Map DB</div>
-                  <div className="mt-1 text-sm text-slate-900">{formatBytes(detail.rtabmapDbSize)}</div>
-                </div>
-                <div>
-                  <div className="text-xs font-medium uppercase tracking-wide text-slate-400">DB 저장 시각</div>
-                  <div className="mt-1 text-sm text-slate-900">{formatDate(detail.rtabmapDbSavedAt)}</div>
-                </div>
-                <div className="col-span-2 sm:col-span-3">
-                  <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Nav2 YAML URL</div>
-                  <div className="mt-1 truncate font-mono text-xs text-slate-700">
-                    {detail.nav2YamlUrl ?? '—'}
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            {floor ? (
-              <div className="grid gap-5 xl:grid-cols-[1.7fr_0.9fr]">
-                <MapCanvas floor={floor} map={detail} />
-
-                <div className="space-y-5">
-                  <section className="rounded-xl border border-slate-200 bg-white p-5">
-                    <div className="text-sm font-semibold text-slate-900">
-                      층 ({detail.floors.length})
-                    </div>
-                    <div className="mt-3 space-y-2">
-                      {detail.floors.map((f) => (
-                        <div
-                          className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2"
-                          key={f.id}
-                        >
-                          <div>
-                            <div className="text-sm font-medium text-slate-900">{f.name}</div>
-                            <div className="text-xs text-slate-500">
-                              {f.code} · {f.locations.length} 위치
-                            </div>
-                          </div>
-                          <span className="text-xs text-slate-400">#{f.orderIndex}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-
-                  <section className="rounded-xl border border-slate-200 bg-white p-5">
-                    <div className="text-sm font-semibold text-slate-900">로봇 ({robots.length})</div>
-                    <div className="mt-3 space-y-2">
-                      {robots.length === 0 ? (
-                        <div className="text-xs text-slate-400">이 맵에 로봇이 없습니다.</div>
-                      ) : null}
-                      {robots.map((robot) => (
-                        <div
-                          className="rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2"
-                          key={robot.robotId}
-                        >
-                          <div className="flex items-center justify-between">
-                            <div className="text-sm font-medium text-slate-900">{robot.label}</div>
-                            <StatusBadge value={robot.status} />
-                          </div>
-                          <div className="mt-1 text-xs text-slate-500">
-                            {robot.activeTaskCode ? `Task ${robot.activeTaskCode}` : 'Idle'} · 배터리 {robot.batteryLevel}%
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-
-                  <section className="rounded-xl border border-slate-200 bg-white p-5">
-                    <div className="text-sm font-semibold text-slate-900">활성 태스크 ({tasks.length})</div>
-                    <div className="mt-3 space-y-2">
-                      {tasks.length === 0 ? (
-                        <div className="text-xs text-slate-400">활성 태스크가 없습니다.</div>
-                      ) : null}
-                      {tasks.map((task) => {
-                        const pickup = locationById.get(task.pickupLocationId)
-                        const dropoff = locationById.get(task.dropoffLocationId)
-                        return (
-                          <div
-                            className="rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2"
-                            key={task.id}
-                          >
-                            <div className="flex items-center justify-between">
-                              <div className="text-sm font-medium text-slate-900">{task.taskCode}</div>
-                              <StatusBadge value={task.status} />
-                            </div>
-                            <div className="mt-1 text-xs text-slate-500">
-                              {(task.assignedRobotLabel ?? 'Queued') + ' · ' + task.progressLabel}
-                            </div>
-                            <div className="mt-1 text-sm text-slate-700">
-                              {pickup?.name ?? 'Pickup'} → {dropoff?.name ?? 'Dropoff'}
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </section>
-                </div>
-              </div>
-            ) : (
-              <div className="rounded-xl border border-slate-200 bg-white p-10 text-center text-slate-500">
-                이 맵에는 층이 등록되어 있지 않습니다.
-              </div>
-            )}
-          </div>
-        )}
-      </AppShell>
-    )
-  }
-
-  // ── List view (card grid) ───────────────────────────────────────
   return (
     <AppShell subtitle="Browse all maps. Click a card to view details." title="Maps">
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
@@ -311,6 +144,8 @@ export function MapsPage() {
         )}
       </div>
 
+      <ParcelPickupBanner count={parcelPickupCount} />
+
       {errorMessage ? (
         <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {errorMessage}
@@ -335,12 +170,34 @@ export function MapsPage() {
               key={m.id}
               map={m}
               onDelete={() => handleDelete(m)}
-              onOpen={() => setSelectedMapId(m.id)}
+              onOpen={() => navigate(`/maps/${m.id}`)}
             />
           ))}
         </div>
       )}
     </AppShell>
+  )
+}
+
+function ParcelPickupBanner({ count }: { count: number }) {
+  if (count === 1) return null
+  if (count === 0) {
+    return (
+      <div className="mb-4 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        <AlertTriangle className="h-4 w-4" />
+        <span>
+          <strong>택배 집하 장소가 설정되지 않았습니다.</strong> 맵을 열어 PARCEL_PICKUP 타입의 스팟을 1개 추가하세요.
+        </span>
+      </div>
+    )
+  }
+  return (
+    <div className="mb-4 flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+      <AlertTriangle className="h-4 w-4" />
+      <span>
+        <strong>택배 집하 장소가 {count}개 존재합니다.</strong> 시스템 전체에서 1개여야 합니다 — 중복된 PARCEL_PICKUP 스팟을 제거하세요.
+      </span>
+    </div>
   )
 }
 

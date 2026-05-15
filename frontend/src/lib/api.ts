@@ -1,12 +1,15 @@
 import type {
+  CreateLocationRequest,
   CreateTaskRequest,
   CurrentMapResponse,
   DispatchCommandRequest,
   EventLog,
   FloorPlan,
   InitialPoseRequest,
+  LocationReference,
   LoginResponse,
   MapMetadata,
+  MapsListResponse,
   OperatorProfile,
   RobotDetailResponse,
   RobotLabelRequest,
@@ -18,6 +21,7 @@ import type {
   SlamSaveRequest,
   TaskDetail,
   TaskSummary,
+  UpdateLocationRequest,
   CreateRobotRequest,
   CreateMapRequest,
 } from '../types/api'
@@ -151,7 +155,7 @@ export function cancelTask(taskId: number | string) {
 }
 
 export function getMaps() {
-  return request<MapMetadata[]>('/api/maps')
+  return request<MapsListResponse>('/api/maps')
 }
 
 export function createMap(payload: CreateMapRequest) {
@@ -173,6 +177,27 @@ export function deleteMap(mapId: number | string) {
 
 export function getFloors() {
   return request<FloorPlan[]>('/api/floors')
+}
+
+// ── Locations (스팟) ────────────────────────────────────────────────────────
+// PARCEL_PICKUP 타입은 시스템 전역 1개만 허용 — 백엔드 LocationService 가 강제 (409 Conflict).
+
+export function createLocation(floorId: number, payload: CreateLocationRequest) {
+  return request<LocationReference>(`/api/floors/${floorId}/locations`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateLocation(id: number, payload: UpdateLocationRequest) {
+  return request<LocationReference>(`/api/locations/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteLocation(id: number) {
+  return request<void>(`/api/locations/${id}`, { method: 'DELETE' })
 }
 
 export function getEvents() {
@@ -246,6 +271,12 @@ export function relocalizeRobot(robotId: number | string) {
   )
 }
 
+export interface RosTopicMetric {
+  alive: boolean
+  hz: number | null            // null = adapter 가 측정 안 함 (subscribe X)
+  expected_hz: number | null   // null = 정상 주기 기준 없음 → 비교 안 함
+}
+
 export interface SystemHealth {
   adapter?: string
   bridge?: string
@@ -256,7 +287,8 @@ export interface SystemHealth {
   rtabmap_db_path?: string
   rtabmap_db_size_mb?: number
   ros_topic_count?: number
-  ros_expected_topics?: Record<string, boolean>
+  ros_expected_topics?: Record<string, boolean>           // legacy alive flag map
+  ros_topic_metrics?: Record<string, RosTopicMetric>      // hz + expected + alive
   disk_free_gb?: number
   floor_db_dir?: string
 }
@@ -331,6 +363,22 @@ export function getSystemHealth(robotId: number | string) {
   return request<SystemHealth>(`/api/robots/${robotId}/system/health`)
 }
 
+// Isaac sim_server 측 robot 위치를 시작 좌표 (또는 지정 pose) 로 텔레포트.
+// pose 생략 시 어댑터가 (0, 0, 0.05, 0,0,0,1) 디폴트 사용.
+// sim 만 텔레포트 — odom integrator 와 어긋나므로 호출 후 reloc 권장.
+export async function resetSimPose(opts?: { robotId?: number; pose?: number[] }) {
+  const r = await fetch('/api/system/sim/reset_pose', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(opts?.robotId !== undefined ? { robot_id: opts.robotId } : {}),
+      ...(opts?.pose ? { pose: opts.pose } : {}),
+    }),
+  })
+  if (!r.ok) throw new ApiError(await r.text(), r.status)
+  return r.json() as Promise<{ ok: boolean; error?: string; robot_id: number; pose: number[] }>
+}
+
 // "모르겠음" — Spring 거치지 않고 어댑터로 OCR floor 만 비움. 맵 / robot DB 미변경.
 // vite proxy 룰: /api/system/* → adapter:8000. 다른 /api/* 는 Spring:8080.
 export async function setOcrFloor(floorCode: string, mode: 'reject' | 'complete' = 'reject') {
@@ -367,6 +415,13 @@ export async function startSession(robotId: number | string, floorCode: string) 
     method: 'POST',
     body: JSON.stringify({ floorCode }),
   })
+}
+
+// 운영자가 명시적으로 "다른 층으로 이동" — robot.mapId/floorId NULL 화 = Unknown
+// session 강제. 다음 health 응답에서 isDraft=true → frontend FloorPromptModal 자동 노출.
+export async function resetSession(robotId: number | string) {
+  return request<{ ok: boolean; robotId: number; state: string }>(
+    `/api/robots/${robotId}/session/reset`, { method: 'POST' })
 }
 
 export function getLivePose(robotId: number | string) {
@@ -438,9 +493,6 @@ export function loadSavedMap(robotId: number | string, mapId: number) {
   })
 }
 
-export function listMaps() {
-  return request<Array<{ id: number; code: string; name: string }>>('/api/maps')
-}
 
 // ── Maps ─────────────────────────────────────────────────────────────────────
 

@@ -50,8 +50,9 @@ export function RobotDetailPage() {
   const currentFloor = currentMap?.floors.find(
     (floor) => floor.code === robotDetail?.robot.floorCode,
   )
+  // PARCEL_PICKUP 은 디스패치 목적지가 아님 (시스템 전역 1개의 집하 거점 역할).
   const dispatchLocations =
-    currentFloor?.locations.filter((location) => location.type !== 'CORRIDOR') ?? []
+    currentFloor?.locations.filter((location) => location.type !== 'PARCEL_PICKUP') ?? []
   const selectedDispatchLocationId = dispatchLocationId ?? dispatchLocations[0]?.id ?? null
 
   const commandMutation = useMutation({
@@ -263,7 +264,11 @@ export function RobotDetailPage() {
                         setSlamMessage(`Failed: ${r.reason ?? 'unknown'}`)
                         return
                       }
-                      const sizeMb = r.blobBytes ? `${(r.blobBytes / 1e6).toFixed(0)}MB` : ''
+                      const sizeMb = r.blobBytes
+                        ? (r.blobBytes >= 1024 ** 3
+                            ? `${(r.blobBytes / 1024 ** 3).toFixed(2)}GB`
+                            : `${(r.blobBytes / 1e6).toFixed(0)}MB`)
+                        : ''
                       setSlamMessage(
                         r.mode === 'localization'
                           ? `Loaded ${r.floorCode} (${sizeMb}) — localization`

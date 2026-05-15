@@ -109,10 +109,12 @@ public final class ApiDtos {
   public record CommandLogResponse(
       Long id,
       LocalDateTime createdAt,
+      LocalDateTime updatedAt,
       String commandType,
       String parameters,
       String status,
-      String issuedBy) {}
+      String issuedBy,
+      String result) {}
 
   public record EventLogResponse(
       Long id,
@@ -125,6 +127,14 @@ public final class ApiDtos {
 
   public record LocationResponse(
       Long id, String name, Long floorId, String type, BigDecimal x, BigDecimal y) {}
+
+  public record CreateLocationRequest(
+      String name, String type, BigDecimal x, BigDecimal y, String code) {}
+
+  public record UpdateLocationRequest(
+      String name, String type, BigDecimal x, BigDecimal y) {}
+
+  public record MapsListResponse(int parcelPickupCount, List<MapMetadataResponse> maps) {}
 
   public record FloorResponse(
       Long id,
@@ -184,4 +194,28 @@ public final class ApiDtos {
       List<CommandLogResponse> commandHistory,
       List<TaskSummaryResponse> taskHistory,
       List<EventLogResponse> events) {}
+
+  // ── OCR spot persistence (vision pipeline 가 누적·확정한 라벨) ──────────────
+  /** Adapter 가 floor 별 confirmed track 들을 batch 로 upsert 할 때 보내는 단일 entry. */
+  public record OcrSpotUpsertRequest(
+      String trackId,
+      String roomId,
+      BigDecimal x,
+      BigDecimal y,
+      double confidence,
+      int observations,
+      boolean confirmed) {}
+
+  public record OcrSpotUpsertBatchRequest(List<OcrSpotUpsertRequest> spots) {}
+
+  public record OcrSpotResponse(
+      Long id,
+      Long floorId,
+      String trackId,
+      String roomId,
+      BigDecimal x,
+      BigDecimal y,
+      double confidence,
+      int observations,
+      boolean confirmed) {}
 }

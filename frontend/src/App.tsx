@@ -4,6 +4,7 @@ import { useSession } from './hooks/useSession'
 import { DashboardPage } from './pages/DashboardPage'
 import { EventsPage } from './pages/EventsPage'
 import { LoginPage } from './pages/LoginPage'
+import { MapDetailPage } from './pages/MapDetailPage'
 import { MapsPage } from './pages/MapsPage'
 import { RobotDetailPage } from './pages/RobotDetailPage'
 import { RobotCreatePage } from './pages/RobotCreatePage'
@@ -70,6 +71,7 @@ export default function App() {
         <Route element={<TasksPage />} path="/tasks" />
         <Route element={<TaskCreatePage />} path="/tasks/new" />
         <Route element={<MapsPage />} path="/maps" />
+        <Route element={<MapDetailPage />} path="/maps/:mapId" />
         <Route element={<EventsPage />} path="/events" />
       </Route>
 

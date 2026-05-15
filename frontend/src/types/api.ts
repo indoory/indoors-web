@@ -246,3 +246,31 @@ export interface CreateFloorRequest {
   orderIndex?: number
 }
 
+/** GET /api/maps wrapper — adds system-wide PARCEL_PICKUP count for list-page badge. */
+export interface MapsListResponse {
+  parcelPickupCount: number
+  maps: MapMetadata[]
+}
+
+export interface CreateLocationRequest {
+  name: string
+  type: string
+  x: number
+  y: number
+  code?: string
+}
+
+export interface UpdateLocationRequest {
+  name: string
+  type: string
+  x: number
+  y: number
+}
+
+/** Backend LocationType enum values. PARCEL_PICKUP is system-wide unique. */
+export const LOCATION_TYPES = [
+  'ROOM',
+  'ELEVATOR',
+  'PARCEL_PICKUP',
+] as const
+

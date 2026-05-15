@@ -34,6 +34,8 @@ public class RobotController {
   private final RobotAdapterClient adapterClient;
   private final FloorRepository floorRepository;
   private final MapRepository mapRepository;
+  private final com.indoory.service.MapService mapService;
+  private final com.indoory.service.ActivityService activityService;
 
   @Operation(summary = "Create robot", description = "Creates a new robot.")
   @PostMapping
@@ -101,6 +103,11 @@ public class RobotController {
       @PathVariable Long robotId,
       @Valid @RequestBody ApiDtos.DispatchCommandRequest request,
       Authentication authentication) {
+    // 진행 중 다른 long-running 명령 close — 1 robot = 1 active. RobotService.dispatch
+    // 가 EXECUTING 으로 새 row 만드므로 그 직전에 close.
+    activityService.closeActiveCommand(
+        robotId, com.indoory.entity.Enum.CommandExecutionStatus.CANCELED,
+        "superseded by DISPATCH");
     robotService.dispatch(robotId, request, (SessionOperator) authentication.getPrincipal());
   }
 
@@ -158,7 +165,16 @@ public class RobotController {
       summary = "Start SLAM auto-explore",
       description = "Starts autonomous exploration for SLAM map building.")
   @PostMapping("/{robotId}/slam/explore/start")
-  public void startSlamExplore(@PathVariable Long robotId) {
+  public void startSlamExplore(@PathVariable Long robotId, Authentication authentication) {
+    String issuer = (authentication != null && authentication.getPrincipal() instanceof SessionOperator op)
+        ? op.email() : "operator";
+    // 옛 EXECUTING 명령 (다른 long-running) close → 1 robot = 1 active command 불변량.
+    activityService.closeActiveCommand(
+        robotId, com.indoory.entity.Enum.CommandExecutionStatus.CANCELED,
+        "superseded by SLAM_EXPLORE_START");
+    activityService.recordCommand(
+        robotId, null, com.indoory.entity.Enum.CommandType.SLAM_EXPLORE_START,
+        "{}", com.indoory.entity.Enum.CommandExecutionStatus.EXECUTING, issuer);
     adapterClient.startSlamExplore();
   }
 
@@ -181,7 +197,16 @@ public class RobotController {
 
   @Operation(summary = "Stop SLAM", description = "Stops the SLAM process on the adapter.")
   @PostMapping("/{robotId}/slam/stop")
-  public void stopSlam(@PathVariable Long robotId) {
+  public void stopSlam(@PathVariable Long robotId, Authentication authentication) {
+    String issuer = (authentication != null && authentication.getPrincipal() instanceof SessionOperator op)
+        ? op.email() : "operator";
+    // 진행 중 SLAM_EXPLORE_START 가 있으면 DONE 으로 close.
+    activityService.closeActiveCommand(
+        robotId, com.indoory.entity.Enum.CommandExecutionStatus.DONE, "stopped by operator");
+    // SLAM_STOP 자체는 즉시 DONE 으로 record (이력 보존).
+    activityService.recordCommand(
+        robotId, null, com.indoory.entity.Enum.CommandType.SLAM_STOP,
+        "{}", com.indoory.entity.Enum.CommandExecutionStatus.DONE, issuer);
     adapterClient.stopSlam();
   }
 
@@ -205,17 +230,21 @@ public class RobotController {
     // 맵이 저장돼 있으면: blob 푸시 → adapter 가 rtabmap localization 모드로 reload
     // 없으면 : adapter 에 fresh-mapping 신호 → rtabmap reset + mapping 모드 (새 맵)
     if (map.getRtabmapDbPath() != null) {
-      try {
-        byte[] blob = java.nio.file.Files.readAllBytes(
-            java.nio.file.Paths.get(map.getRtabmapDbPath()));
-        adapterClient.setFloor(floor.getCode(), blob);
-        return Map.of(
-            "ok", true,
-            "mode", "localization",
-            "floorCode", floor.getCode(),
-            "blobBytes", blob.length);
-      } catch (java.io.IOException e) {
-        return Map.of("ok", false, "reason", "failed to read blob: " + e.getMessage());
+      java.nio.file.Path dbPath = java.nio.file.Paths.get(map.getRtabmapDbPath());
+      if (java.nio.file.Files.exists(dbPath)) {
+        try {
+          long size = java.nio.file.Files.size(dbPath);
+          adapterClient.setFloor(floor.getCode(), dbPath);
+          return Map.of(
+              "ok", true,
+              "mode", "localization",
+              "floorCode", floor.getCode(),
+              "blobBytes", size);
+        } catch (java.io.IOException e) {
+          return Map.of("ok", false, "reason", "failed to stat db: " + e.getMessage());
+        }
+      } else {
+        return Map.of("ok", false, "reason", "db file missing: " + dbPath);
       }
     } else {
       adapterClient.setFloorFresh(floor.getCode());
@@ -231,8 +260,25 @@ public class RobotController {
       summary = "Spin & relocalize",
       description = "로봇이 한 바퀴 회전하면서 RTAB-Map BoW 매칭으로 맵 위 자기 위치 추정.")
   @PostMapping("/{robotId}/relocalize")
-  public Map<String, Object> relocalize(@PathVariable Long robotId) {
-    return adapterClient.relocalize();
+  public Map<String, Object> relocalize(@PathVariable Long robotId, Authentication authentication) {
+    String issuer = (authentication != null && authentication.getPrincipal() instanceof SessionOperator op)
+        ? op.email() : "operator";
+    activityService.closeActiveCommand(
+        robotId, com.indoory.entity.Enum.CommandExecutionStatus.CANCELED,
+        "superseded by RELOCALIZE");
+    var cmd = activityService.recordCommand(
+        robotId, null, com.indoory.entity.Enum.CommandType.RELOCALIZE,
+        "{}", com.indoory.entity.Enum.CommandExecutionStatus.EXECUTING, issuer);
+    Map<String, Object> result = adapterClient.relocalize();
+    // adapter 응답에 따라 마무리. converged=true → DONE. 아니면 FAILED (정확히는
+    // "spin 끝까지 매칭 X" 라 운영적으로 fail 로 표시 — 사용자가 다시 trigger 가능).
+    boolean converged = Boolean.TRUE.equals(result.get("converged"));
+    activityService.markCommandFinished(
+        cmd.getId(),
+        converged ? com.indoory.entity.Enum.CommandExecutionStatus.DONE
+                  : com.indoory.entity.Enum.CommandExecutionStatus.FAILED,
+        result.toString());
+    return result;
   }
 
   @Operation(summary = "System health", description = "어댑터+시뮬+ROS 토픽 종합 헬스.")
@@ -261,9 +307,9 @@ public class RobotController {
       return Map.of("ok", false, "reason", "map has no saved blob");
     }
     try {
-      byte[] blob = java.nio.file.Files.readAllBytes(
-          java.nio.file.Paths.get(map.getRtabmapDbPath()));
-      adapterClient.setFloor(map.getCode(), blob);
+      java.nio.file.Path dbPath = java.nio.file.Paths.get(map.getRtabmapDbPath());
+      long size = java.nio.file.Files.size(dbPath);
+      adapterClient.setFloor(map.getCode(), dbPath);
       // Robot 의 mapId 갱신해 더 이상 Unknown 아니게.
       robotService.assignMapToRobot(robotId, map.getId());
       return Map.of(
@@ -271,7 +317,7 @@ public class RobotController {
           "mode", "localization",
           "mapId", map.getId(),
           "mapName", map.getName(),
-          "blobBytes", blob.length);
+          "blobBytes", size);
     } catch (java.io.IOException e) {
       return Map.of("ok", false, "reason", "failed to read blob: " + e.getMessage());
     }
@@ -292,12 +338,23 @@ public class RobotController {
     }
     String displayName = "FLOOR " + code.replaceAll("F$", "").replace("B", "B");
 
-    // 1) IndoorMap (code 기준) — 있으면 그대로, 없으면 생성.
+    // 1) IndoorMap 결정 — 3-단계 분기:
+    //   (a) 같은 code 의 saved row 있음 → 그대로 사용 (재방문)
+    //   (b) robot 이 draft row (Untitled / 임시 code) 에 보딩됐으면 그 row 를
+    //       promote (code/name 변경 + working DB → snapshot). row 재사용 = 옛
+    //       mesh 보존 + robot.mapId 변경 X. 매번 row 생기던 버그 fix.
+    //   (c) robot 이 saved 다른 floor 에 보딩됐는데 새 code 입력 (의도적 floor
+    //       전환) → 새 row 를 working DB snapshot 과 함께 생성 (adoptCurrentSession).
+    Long currentMapId = robotService.getRobotMapId(robotId);
+    IndoorMap currentMap = currentMapId != null
+        ? mapRepository.findById(currentMapId).orElse(null) : null;
     IndoorMap map = mapRepository
         .findByCode(code)
         .orElseGet(() -> {
-          IndoorMap fresh = new IndoorMap(code, displayName);
-          return mapRepository.save(fresh);
+          if (currentMap != null && mapService.isDraftMap(currentMap)) {
+            return mapService.promoteDraftToFloor(currentMap.getId(), code, displayName);
+          }
+          return mapService.adoptCurrentSession(code, displayName);
         });
 
     // 2) Floor 서브로우 — IndoorMap 이 새로 생성된 경우 함께 생성.
@@ -310,15 +367,16 @@ public class RobotController {
           return floorRepository.save(new Floor(map.getId(), code, displayName, order));
         });
 
-    // 3) adapter: blob 있으면 load (localization), 없으면 fresh.
+    // 3) adapter: .db 있으면 load (localization), 없으면 fresh.
+    // 6GB+ 누적 .db 도 처리: readAllBytes/byte[] (INT_MAX 한계 + heap OOM) 대신
+    // Path 전달 → setFloor 가 FileSystemResource 로 chunk streaming.
     String mode;
     if (map.getRtabmapDbPath() != null) {
-      try {
-        byte[] blob = java.nio.file.Files.readAllBytes(
-            java.nio.file.Paths.get(map.getRtabmapDbPath()));
-        adapterClient.setFloor(code, blob);
+      java.nio.file.Path dbPath = java.nio.file.Paths.get(map.getRtabmapDbPath());
+      if (java.nio.file.Files.exists(dbPath)) {
+        adapterClient.setFloor(code, dbPath);
         mode = "localization";
-      } catch (java.io.IOException e) {
+      } else {
         adapterClient.setFloorFresh(code);
         mode = "mapping_fallback";
       }
@@ -331,8 +389,8 @@ public class RobotController {
     robotService.assignMapToRobot(robotId, map.getId());
     robotService.assignFloorToRobot(robotId, floor.getId());
 
-    // 5) OCR floor hint set.
-    adapterClient.setOcrFloor(code);
+    // 5) OCR floor hint + floorId — adapter 가 그 floor 로 spot 영속화 + 시드.
+    adapterClient.setOcrFloor(code, floor.getId());
 
     // 6) SLAM 시작 — 사용자 멘탈모델 ("층 선택 = 세션 시작")에 맞게 slam_toolbox
     //    자동 spawn. 이미 떠있으면 noop. 이거 빠지면 /map 토픽 비어서 UI 가 빈 화면.
@@ -346,6 +404,31 @@ public class RobotController {
         "mapId", map.getId(),
         "mapName", map.getName(),
         "slamStarted", true);
+  }
+
+  @Operation(
+      summary = "Reset robot session — Unknown session 강제",
+      description =
+          "robot.mapId/floorId 를 NULL 화 (=Unknown session). 운영자가 '다른 층으로 이동'"
+              + " 등 명시적으로 보딩 다시 받고 싶을 때 호출. frontend 의 isDraft transition"
+              + " 으로 floor modal 자동 노출.")
+  @PostMapping("/{robotId}/session/reset")
+  public Map<String, Object> resetSession(@PathVariable Long robotId) {
+    robotService.detachRobotMapAndFloor(robotId);
+    return Map.of("ok", true, "robotId", robotId, "state", "unknown_session");
+  }
+
+  @Operation(
+      summary = "Reset all robot sessions",
+      description =
+          "ROS 재시작 시 adapter 가 startup event 에서 호출. 모든 robot 의 mapId/floorId"
+              + " NULL 화 → frontend 의 isDraft 가 true 로 전이 → FloorPromptModal 자동 노출."
+              + " 운영자가 '여기는 어디 층인가요' 다시 답하게 함. 단순 adapter restart 도"
+              + " 보딩 재확인 trigger 로 취급 — 위치 신뢰 기준은 '세션' 이지 '레코드' 가 아님.")
+  @PostMapping("/session/reset-all")
+  public Map<String, Object> resetAllSessions() {
+    int n = robotService.detachAllRobots();
+    return Map.of("ok", true, "detached", n);
   }
 
   /** "5F" → 5, "B3F" → -3, "13F" → 13. */

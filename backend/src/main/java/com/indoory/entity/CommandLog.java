@@ -12,6 +12,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import lombok.Setter;
 
 @Entity
 @Table(name = "command_logs")
@@ -34,10 +35,17 @@ public class CommandLog extends BaseEntity {
   @Column(nullable = false)
   private String parameters;
 
+  // EXECUTING → DONE/FAILED/CANCELED 전이용. ActivityService.markFinished 가 set.
+  @Setter
   @Enumerated(EnumType.STRING)
   @Column(nullable = false)
   private CommandExecutionStatus status;
 
   @Column(name = "issued_by", nullable = false)
   private String issuedBy;
+
+  // 실행 결과 (JSON 또는 plain string). converged=true/false, error msg 등.
+  @Setter
+  @Column(name = "result", length = 1024)
+  private String result;
 }

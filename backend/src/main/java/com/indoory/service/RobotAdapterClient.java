@@ -105,8 +105,13 @@ public class RobotAdapterClient {
         Map.of("mapId", mapId, "mapName", mapName == null ? "" : mapName));
   }
 
-  /** 해당 층의 rtabmap .db blob 을 어댑터에 multipart 로 전달, 어댑터가 rtabmap reload 트리거. */
-  public void setFloor(String floorCode, byte[] dbBlob) {
+  /** 해당 층의 rtabmap .db 를 어댑터에 multipart streaming 으로 전달, 어댑터가
+   *  rtabmap reload 트리거.
+   *
+   *  byte[] 시그니처는 readAllBytes 가 JVM byte[] 의 INT_MAX (~2GB) 한계 + 전체
+   *  blob 을 heap 에 보관해야 해서 멀티세션 누적된 .db (6GB+) 에서 OOM. 대신 Path
+   *  + FileSystemResource 로 chunk 단위 stream → heap fixed footprint. */
+  public void setFloor(String floorCode, java.nio.file.Path dbPath) {
     if (!properties.isEnabled()) return;
     String url = properties.getBaseUrl() + "/api/robots/" + ADAPTER_ROBOT_ID
         + "/floor/set?floorCode=" + floorCode;
@@ -115,12 +120,14 @@ public class RobotAdapterClient {
       HttpHeaders headers = new HttpHeaders();
       headers.setContentType(MediaType.MULTIPART_FORM_DATA);
       MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
-      ByteArrayResource res = new ByteArrayResource(dbBlob) {
-        @Override public String getFilename() { return floorCode + ".db"; }
-      };
+      org.springframework.core.io.FileSystemResource res =
+          new org.springframework.core.io.FileSystemResource(dbPath) {
+            @Override public String getFilename() { return floorCode + ".db"; }
+          };
       body.add("file", res);
       rt.postForEntity(url, new HttpEntity<>(body, headers), Void.class);
-      log.info("Adapter floor/set sent: {} ({} bytes)", floorCode, dbBlob.length);
+      long size = java.nio.file.Files.size(dbPath);
+      log.info("Adapter floor/set sent: {} ({} bytes, streamed)", floorCode, size);
     } catch (Exception e) {
       log.warn("Adapter floor/set failed: {} — {}", floorCode, e.getMessage());
     }
@@ -134,12 +141,20 @@ public class RobotAdapterClient {
         Map.of("floorCode", floorCode));
   }
 
-  /** OCR floor hint 갱신. 빈 문자열이면 필터 off (default). */
+  /** OCR floor hint 갱신 (floor code only). 빈 문자열이면 필터 off (default). */
   public void setOcrFloor(String floorCode) {
+    setOcrFloor(floorCode, null);
+  }
+
+  /** OCR floor hint + floorId — adapter 가 해당 floor 로 spot 영속화 + 시드.
+   *  floorId=null 이면 영속화 비활성 (filter off). */
+  public void setOcrFloor(String floorCode, Long floorId) {
     if (!properties.isEnabled()) return;
-    post(
-        "/api/system/semantic_ocr/floor",
-        Map.of("floorCode", floorCode == null ? "" : floorCode, "mode", "reject"));
+    Map<String, Object> body = new java.util.HashMap<>();
+    body.put("floorCode", floorCode == null ? "" : floorCode);
+    body.put("mode", "reject");
+    if (floorId != null) body.put("floorId", floorId);
+    post("/api/system/semantic_ocr/floor", body);
   }
 
   /** 회전·재로컬 트리거. 어댑터가 동기 spin 후 수렴 여부 JSON 반환. */

@@ -25,7 +25,7 @@ public class ActivityService {
   }
 
   @Transactional
-  public void recordCommand(
+  public CommandLog recordCommand(
       Long robotId,
       Long taskId,
       CommandType commandType,
@@ -33,7 +33,36 @@ public class ActivityService {
       CommandExecutionStatus status,
       String issuedBy) {
     CommandLog command = newCommandLog(robotId, taskId, commandType, parameters, status, issuedBy);
-    commandLogRepository.save(command);
+    return commandLogRepository.save(command);
+  }
+
+  /** EXECUTING row 를 DONE/FAILED/CANCELED 로 종료 + result 저장. id 가 null
+   *  또는 row 없으면 silent skip (멱등성). result 는 1024 chars 로 truncate. */
+  @Transactional
+  public void markCommandFinished(
+      Long commandId, CommandExecutionStatus status, String result) {
+    if (commandId == null) return;
+    commandLogRepository.findById(commandId).ifPresent(cmd -> {
+      cmd.setStatus(status);
+      if (result != null) {
+        cmd.setResult(result.length() > 1024 ? result.substring(0, 1024) : result);
+      }
+      commandLogRepository.save(cmd);
+    });
+  }
+
+  /** robot 의 가장 최근 EXECUTING 명령 (없으면 빈 Optional). frontend 가 mount 시 fetch. */
+  @Transactional(readOnly = true)
+  public java.util.Optional<CommandLog> findActiveCommand(Long robotId) {
+    return commandLogRepository.findFirstByRobotIdAndStatusOrderByIdDesc(
+        robotId, CommandExecutionStatus.EXECUTING);
+  }
+
+  /** 진행 중인 EXECUTING 명령을 종료. 새 long-running 명령 시작 전 호출 (1 robot
+   *  = 1 active command 불변량). null → no-op. */
+  @Transactional
+  public void closeActiveCommand(Long robotId, CommandExecutionStatus status, String result) {
+    findActiveCommand(robotId).ifPresent(cmd -> markCommandFinished(cmd.getId(), status, result));
   }
 
   private EventLog newEventLog(

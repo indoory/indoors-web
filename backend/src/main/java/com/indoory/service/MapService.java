@@ -19,6 +19,7 @@ import java.nio.file.Paths;
 import java.util.List;
 import javax.imageio.ImageIO;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,6 +28,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class MapService {
 
   private final MapRepository mapRepository;
@@ -37,10 +39,18 @@ public class MapService {
   private final TaskService taskService;
   private final ViewAssemblerService viewAssemblerService;
   private final RobotAdapterClient adapterClient;
+  private final OcrSpotService ocrSpotService;
 
   @Transactional(readOnly = true)
   public List<ApiDtos.MapMetadataResponse> getMaps() {
     return mapRepository.findAll().stream().map(viewAssemblerService::toMapMetadata).toList();
+  }
+
+  @Transactional(readOnly = true)
+  public ApiDtos.MapsListResponse getMapsList() {
+    int parcelPickupCount =
+        (int) locationRepository.countByType(com.indoory.entity.Enum.LocationType.PARCEL_PICKUP);
+    return new ApiDtos.MapsListResponse(parcelPickupCount, getMaps());
   }
 
   @Transactional(readOnly = true)
@@ -130,9 +140,20 @@ public class MapService {
     IndoorMap map = findMap(mapId);
     String path = map.getRtabmapDbPath();
     if (path != null && path.startsWith(STORAGE_DIR.toString())) {
-      try { Files.deleteIfExists(Paths.get(path)); } catch (IOException ignored) {}
+      try {
+        boolean deleted = Files.deleteIfExists(Paths.get(path));
+        log.info("discardMap[{}]: blob {} {}", mapId, path,
+            deleted ? "deleted" : "not present");
+      } catch (IOException e) {
+        // 권한/lock/disk fail — silently swallow 하면 "삭제했는데 파일 남음"
+        // 증상 진단 불가. 명시적 ERROR 로 backend.log 에 흔적 남기기.
+        log.error("discardMap[{}]: failed to delete blob {} — {}",
+            mapId, path, e.toString());
+      }
     }
     mapRepository.delete(map);
+    // OCR spot 초기화 (deleteMap 과 동일 이유 — 좌표계 무효).
+    try { adapterClient.setOcrFloor(""); } catch (Exception ignored) {}
   }
 
   /**
@@ -142,6 +163,77 @@ public class MapService {
    * 만들고 디스크의 ~/.ros/rtabmap.db 를 /var/indoory/maps/{id}.db 로 복사. 호출자가
    * 받은 mapId 로 robot.mapId 갱신하면 더 이상 Unknown 이 아님.
    */
+  /**
+   * 기존 draft IndoorMap row 를 floor code/name 으로 _승급_ — row 재사용 + working DB
+   * snapshot 으로 promote. 옛 mesh 보존, robot.mapId 변경 안 됨.
+   *
+   * <p>code 컬럼이 unique 라 일반 setter 없음 — reflection 으로 set 후 save.
+   * (renameMap 의 name 만 변경하던 것과 같은 패턴 + code 까지 확장.)
+   */
+  @Transactional
+  public IndoorMap promoteDraftToFloor(Long mapId, String newCode, String newName) {
+    IndoorMap map = findMap(mapId);
+    try {
+      var codeF = IndoorMap.class.getDeclaredField("code");
+      var nameF = IndoorMap.class.getDeclaredField("name");
+      codeF.setAccessible(true);
+      nameF.setAccessible(true);
+      codeF.set(map, newCode);
+      nameF.set(map, newName);
+      if (Files.exists(WORKING_DB)) {
+        if (!Files.exists(STORAGE_DIR)) Files.createDirectories(STORAGE_DIR);
+        Path target = STORAGE_DIR.resolve(map.getId() + ".db");
+        Files.copy(WORKING_DB, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        map.recordRtabmapDb(target.toString(), Files.size(target));
+      }
+      return mapRepository.save(map);
+    } catch (Exception e) {
+      throw new ResponseStatusException(
+          HttpStatus.INTERNAL_SERVER_ERROR, "promote draft failed", e);
+    }
+  }
+
+  /**
+   * row 가 draft (= 사용자가 floor 이름 안 정한 임시) 인지 판단.
+   * - name == "Untitled" 또는
+   * - code 가 임시 prefix ("session-", "map-") 시작
+   * 둘 중 하나면 draft. 사용자가 명시적 floor code 입력했으면 둘 다 아니어서 false.
+   */
+  public boolean isDraftMap(IndoorMap map) {
+    if (map == null) return false;
+    if ("Untitled".equals(map.getName())) return true;
+    String code = map.getCode();
+    return code != null && (code.startsWith("session-") || code.startsWith("map-"));
+  }
+
+  /**
+   * 현재 working DB 를 (code, name) 의 새 IndoorMap 으로 _adopt_ — 매핑 mesh 보존.
+   *
+   * <p>사용자가 매핑한 후 floor 입력하는 시점에서 사용. 옛 createMapFromCurrentSession
+   * 과 비슷하지만 "Untitled" 가정 없이 운영자 입력 floor code/name 으로 바로 row 생성.
+   * 호출 후 RobotController.startSession 이 robot.mapId 갱신.
+   *
+   * <p>working DB 가 없으면 row 만 만들고 snapshot 은 비워둠 (다음 매핑 진행 후
+   * setFloor blob 업로드 시 채워짐).
+   */
+  @Transactional
+  public IndoorMap adoptCurrentSession(String code, String name) {
+    IndoorMap map = new IndoorMap(code, name);
+    mapRepository.save(map);
+    if (Files.exists(WORKING_DB)) {
+      try {
+        if (!Files.exists(STORAGE_DIR)) Files.createDirectories(STORAGE_DIR);
+        Path target = STORAGE_DIR.resolve(map.getId() + ".db");
+        Files.copy(WORKING_DB, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        map.recordRtabmapDb(target.toString(), Files.size(target));
+        mapRepository.save(map);
+      } catch (IOException ignored) {
+        // snapshot 실패해도 row 는 살림. 다음 명시적 save 시 채워짐.
+      }
+    }
+    return map;
+  }
+
   @Transactional
   public IndoorMap createMapFromCurrentSession(String name, String code) {
     // 매번 새 row 생성. 이름 중복 허용 — 사용자가 같은 이름으로 여러 번 저장하면
@@ -184,6 +276,29 @@ public class MapService {
       throw new ResponseStatusException(
           HttpStatus.INTERNAL_SERVER_ERROR, "failed to write blob to disk", e);
     }
+  }
+
+  /**
+   * RTAB-Map 이 maps/{id}.db 에 직접 incremental write 한 경우, entity 의
+   * rtabmapDbSize/SavedAt 컬럼이 stale 함. 디스크 stat 으로 갱신만 수행.
+   * 파일 자체는 안 건드림 (RTAB-Map 의 SQLite handle 보호).
+   */
+  @Transactional
+  public ApiDtos.MapMetadataResponse refreshRtabmapDbMetadata(Long mapId) {
+    IndoorMap map = findMap(mapId);
+    String path = map.getRtabmapDbPath();
+    if (path != null) {
+      try {
+        Path p = Paths.get(path);
+        if (Files.exists(p)) {
+          map.recordRtabmapDb(path, Files.size(p));
+          mapRepository.save(map);
+        }
+      } catch (IOException ignored) {
+        // 디스크 read 실패해도 entity 는 그대로. 다음 시도 때 재시도.
+      }
+    }
+    return viewAssemblerService.toMapMetadata(map);
   }
 
   @Transactional(readOnly = true)
@@ -278,38 +393,69 @@ public class MapService {
   public void deleteMap(Long mapId) {
     IndoorMap map = findMap(mapId);
 
-    // 라이브 태스크가 점유 중이면 차단 (실제로 이 맵의 좌표계를 쓰며 동작 중).
-    // Robot.mapId 는 차단 사유가 아니다 — 그건 단지 "마지막으로 라벨링된 곳" 메타데이터일 뿐.
-    // 삭제 시 dangling 로봇은 자동 detach (mapId/floorId = NULL → Unknown session 복귀).
-    // OCR / 사용자 입력으로 다음 세션 시작될 때 새로 라벨링됨.
-    long liveTaskCount =
-        taskRepository.findAllByOrderByCreatedAtDesc().stream()
-            .filter(task -> java.util.Objects.equals(task.getMapId(), mapId))
-            .filter(task -> LIVE_TASK_STATUSES.contains(task.getStatus()))
-            .count();
-    if (liveTaskCount > 0) {
-      throw new ResponseStatusException(
-          HttpStatus.CONFLICT,
-          "Cannot delete map: " + liveTaskCount + " live task(s) still in progress");
-    }
-
-    // 이 맵을 가리키는 로봇 detach — reflection 으로 mapId/floorId 둘 다 null 화.
+    // 강제 삭제 정책: 어떤 참조든 차단 사유 X.
+    //   - Robot.mapId/floorId  → null 화 (Unknown session 복귀)
+    //   - Live task            → CANCELED 처리 + mapId 끊기 (이전엔 차단 사유)
+    //   - 종료된 task          → mapId 끊기
+    //   - Floor 행             → cascade delete (Floor.mapId NOT NULL 이므로
+    //                            dangling row 가 다음 시작 시 NPE 유발)
+    //   - snapshot blob        → 디스크에서 함께 삭제 (working file ~/.ros/rtabmap.db
+    //                            는 공유 자원이라 절대 안 건드림)
     robotRepository.findAllByOrderByIdAsc().stream()
         .filter(robot -> java.util.Objects.equals(robot.getMapId(), mapId))
         .forEach(this::detachRobotFromMap);
 
-    // 이 맵에 묶인 종료된 task 들도 mapId 끊어주기 (FK 가 없어도 정합성 보장).
     taskRepository.findAllByOrderByCreatedAtDesc().stream()
         .filter(task -> java.util.Objects.equals(task.getMapId(), mapId))
-        .forEach(this::detachTaskFromMap);
+        .forEach(task -> {
+          if (LIVE_TASK_STATUSES.contains(task.getStatus())) {
+            cancelLiveTask(task);
+          }
+          detachTaskFromMap(task);
+        });
 
-    // snapshot blob 만 삭제. working file (~/.ros/rtabmap.db) 은 공유 자원이라 보존.
+    // Floor 행 삭제 — Floor.mapId 가 NOT NULL 이라 detach 불가능, 행 자체 제거.
+    // Location 은 floorId 만 가진 dangling FK 이므로 floor 삭제 전에 cascade 정리.
+    // (PARCEL_PICKUP 이 시스템 전역 카운트라 orphan 1개라도 남으면 무결성 깨짐.)
+    // OcrSpot 도 같은 floor 종속 — vision pipeline 누적 라벨, 좌표계 무효화되면 의미 X.
+    var floorsToDelete = floorRepository.findAllByMapIdOrderByOrderIndexAsc(mapId);
+    if (!floorsToDelete.isEmpty()) {
+      var floorIds = floorsToDelete.stream().map(Floor::getId).toList();
+      locationRepository.deleteAllByFloorIdIn(floorIds);
+      ocrSpotService.clearByFloorIds(floorIds);
+    }
+    floorsToDelete.forEach(floorRepository::delete);
+
     String path = map.getRtabmapDbPath();
     if (path != null && path.startsWith(STORAGE_DIR.toString())) {
-      try { Files.deleteIfExists(Paths.get(path)); } catch (IOException ignored) {}
+      try {
+        boolean deleted = Files.deleteIfExists(Paths.get(path));
+        log.info("deleteMap[{}]: blob {} {}", mapId, path,
+            deleted ? "deleted" : "not present");
+      } catch (IOException e) {
+        // silent swallow 대신 명시적 ERROR — 사용자 "삭제했는데 안 됨" 보고 추적용.
+        log.error("deleteMap[{}]: failed to delete blob {} — {}",
+            mapId, path, e.toString());
+      }
     }
 
     mapRepository.delete(map);
+
+    // OCR spot 도 같이 초기화 — 삭제된 맵 좌표계 위에 잡혔던 트랙은 무효.
+    // setOcrFloor('') 가 floor_hint 변경 + adapter cache clear + WS empty push 까지
+    // 일괄 처리. adapter 가 미실행이어도 silent skip 이라 안전.
+    try { adapterClient.setOcrFloor(""); } catch (Exception ignored) {}
+  }
+
+  /** 라이브 task 를 CANCELED 로 강제 종료. Robot 쪽 단방향 관계(Task.assignedRobotId)
+   *  라 별도 처리 불필요 — task status 만 바꾸면 history 로 남음. */
+  private void cancelLiveTask(com.indoory.entity.Task task) {
+    try {
+      var statusField = com.indoory.entity.Task.class.getDeclaredField("status");
+      statusField.setAccessible(true);
+      statusField.set(task, TaskStatus.CANCELED);
+      taskRepository.save(task);
+    } catch (Exception ignored) {}
   }
 
   // mapId/floorId 컬럼은 도메인 메서드가 없어서 reflection 으로만 비울 수 있다

@@ -7,11 +7,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppShell } from '../components/AppShell'
 import { FloorPromptModal } from '../components/FloorPromptModal'
 import { LoadingView } from '../components/LoadingView'
+import { Map3DCanvas } from '../components/Map3DCanvas'
 import {
   connectTeleopDevice, disconnectTeleopDevice,
   emergencyStopRobot, getLivePose, getMapMeta,
-  getRobots, getSystemHealth, getTeleopDeviceStatus, listMaps, listTeleopPorts,
-  loadSavedMap, pauseRobot, relocalizeRobot, renameMap, resumeRobot,
+  getMaps, getRobots, getSystemHealth, getTeleopDeviceStatus, listTeleopPorts,
+  loadSavedMap, pauseRobot, relocalizeRobot, renameMap, resetSimPose, resumeRobot,
   startSlamExplore, stopSlam, teleop, type SystemHealth,
 } from '../lib/api'
 
@@ -34,7 +35,7 @@ function useLivePose() {
     let stopped = false
     const close = () => {
       if (timer) { clearTimeout(timer); timer = null }
-      if (ws) { try { ws.close() } catch {}; ws = null }
+      if (ws) { ws.onopen = null; ws.onclose = null; ws.onmessage = null; ws.onerror = null; try { ws.close() } catch {}; ws = null }
       setConnected(false)
     }
     const connect = () => {
@@ -47,7 +48,7 @@ function useLivePose() {
         try { setPose(JSON.parse(ev.data)) } catch {}
       }
     }
-    const onVis = () => { if (document.hidden) close(); else if (!ws || ws.readyState >= WebSocket.CLOSING) connect() }
+    const onVis = () => { if (document.hidden) close(); else { close(); connect() } }
     document.addEventListener('visibilitychange', onVis)
     connect()
     return () => { stopped = true; document.removeEventListener('visibilitychange', onVis); close() }
@@ -60,16 +61,21 @@ function useLivePose() {
   }
 }
 
-type TabId = 'mapinfo' | 'action' | 'log' | 'health' | 'debug'
+type TabId = 'mapinfo' | 'action' | 'view' | 'log' | 'health' | 'debug'
 const TABS: { id: TabId; label: string }[] = [
   { id: 'mapinfo', label: '맵' },
   { id: 'action',  label: '조작' },
+  { id: 'view',    label: '뷰' },
   { id: 'log',     label: '로그' },
   { id: 'health',  label: '헬스' },
   { id: 'debug',   label: '디버그' },
 ]
 
-type ActionMode = 'idle' | 'goto-arming' | 'goto-placed' | 'goto-running' | 'reloc' | 'slam'
+type ActionMode =
+  | 'idle'
+  | 'goto-arming' | 'goto-placed' | 'goto-running'
+  | 'teleport-arming' | 'teleport-placed'
+  | 'reloc' | 'slam'
 
 // 사이드/도크 크기는 localStorage 에 저장 → 새로고침 후 유지
 const LS_SIDE = 'console.sideWidth'
@@ -83,6 +89,8 @@ export function RobotsPage() {
   const [actionMode, setActionMode] = useState<ActionMode>('idle')
   const [viewRotation, setViewRotation] = useState(0)  // 맵 캔버스 회전 (radians) — WASD 방향 변환용
   const [goalPreview, setGoalPreview] = useState<{ x: number; y: number } | null>(null)
+  const [teleportPreview, setTeleportPreview] = useState<{ x: number; y: number } | null>(null)
+  const [cursorWorld, setCursorWorld] = useState<{ x: number; y: number } | null>(null)
   const log = useCallback((m: string) =>
     setActionLog((p) => [`${new Date().toLocaleTimeString()} ${m}`, ...p].slice(0, 50)), [])
 
@@ -103,13 +111,15 @@ export function RobotsPage() {
   const robotId = robot?.id
   const isDraft = robot?.mapName === 'Untitled' || !robot?.mapName
 
-  const mapsQuery = useQuery({ queryKey: ['maps'], queryFn: listMaps, refetchInterval: 30000 })
+  const mapsQuery = useQuery({ queryKey: ['maps'], queryFn: getMaps, refetchInterval: 30000 })
   const healthQuery = useQuery<SystemHealth>({
     queryKey: ['system-health', robotId],
     queryFn: () => (robotId ? getSystemHealth(robotId) : Promise.resolve({} as SystemHealth)),
     enabled: !!robotId,
     // 1.5초마다 — slam/explore active 상태가 stop 직후 빠르게 idle 로 반영되게.
-    refetchInterval: 1500,
+    // 헬스 패널의 Hz 표시는 1초 단위로 갱신하기로 한 약속 — 어댑터의 2초 sliding
+    // window 와 결합해 시각적으로 부드럽게 흐른다 (window 가 짧으면 0/30 사이 깜빡).
+    refetchInterval: 1000,
   })
   // pose 는 /ws/pose WebSocket 으로 ~50Hz push 받음 (HTTP 1Hz 폴링 제거).
   const { pose, connected: poseConnected } = useLivePose()
@@ -120,54 +130,20 @@ export function RobotsPage() {
   })
 
   // ── 층 확인 modal 노출 로직 ─────────────────────────────────────────────
-  // 운영자에게 묻는 시점은 정확히 **sim 재기동** + **첫 페이지 load (이 세션
-  // 응답 없음)**. ws disconnect/reconnect 는 새 세션이 아닌 단순 네트워크 글리치라
-  // 매번 묻지 않음. boot detect = sim_secs 가 큰 폭으로 뒤로 점프 (sim time reset).
-  // sessionStorage 로 페이지 새로고침해도 응답 유지 — 단 robotId 단위로.
-  const sessionKey = `floor-asked-${robotId ?? 'unknown'}`
+  // **단일 진실 source = robot.mapId**. mapId 가 NULL (=Unknown session) 이면 보딩
+  // 필요 → modal. 보딩되면 (mapId 채워짐) modal 자동 닫힘. 운영자가 다른 층으로
+  // 옮기려면 `/api/robots/{id}/session/reset` 호출 → backend 가 mapId NULL 화 →
+  // 다음 health 응답에서 isDraft=true → modal 자동 노출.
+  //
+  // 이전엔 sessionStorage + sim_secs reset 감지 + isDraft 전이 3가지 trigger 였는데:
+  //   - sessionStorage 는 탭 lifetime 이라 ROS 재기동 무관 → 영원히 응답 skip
+  //   - sim_secs 는 wall-time 누적이라 reset 감지 실패
+  //   - isDraft 는 한 번 false 되면 보딩됐다고 판단 — ROS 재기동 후에도 mapId 살아남
+  // 셋 다 동시에 막혀 modal 영원히 안 뜨던 문제 → 단일 조건으로 단순화.
   const [showFloorModal, setShowFloorModal] = useState(false)
-  const askedRef = useRef(false)
-  const lastSimSecsRef = useRef<number | null>(null)
-
-  // 첫 mount: sessionStorage 응답 기록 있으면 묻지 않음, 없으면 modal 노출.
   useEffect(() => {
-    if (!robotId) return
-    if (sessionStorage.getItem(sessionKey) === '1') {
-      askedRef.current = true
-      return
-    }
-    setShowFloorModal(true)
-  }, [robotId, sessionKey])
-
-  // sim 재기동 detect — sim_secs 가 60초 이상 뒤로 점프 → 새 boot → 응답 기록
-  // invalidate + modal 재노출. 정상 sim 진행은 sim_secs 단조 증가라 trigger 안 됨.
-  // 주의: `health` const 는 이 컴포넌트의 더 아래에서 선언되어 TDZ 회피 위해
-  // healthQuery.data?.sim_secs 로 직접 참조.
-  useEffect(() => {
-    const cur = pose.sim_secs ?? healthQuery.data?.sim_secs
-    if (cur == null) return
-    const prev = lastSimSecsRef.current
-    lastSimSecsRef.current = cur
-    if (prev != null && cur < prev - 60) {
-      sessionStorage.removeItem(sessionKey)
-      askedRef.current = false
-      setShowFloorModal(true)
-    }
-  }, [pose.sim_secs, healthQuery.data?.sim_secs, sessionKey])
-
-  // 운영자가 맵 삭제로 인해 isDraft 가 false→true 로 전이 — 그땐 한 번 더 묻는다
-  // (세션은 같지만 robot 의 map 컨텍스트가 reset). 단 askedRef 가 false 면 어차피
-  // 첫 mount 의 useEffect 가 처리하므로 여기선 askedRef.current=true 일 때만 재노출.
-  const lastDraftRef = useRef(false)
-  useEffect(() => {
-    const wasDraft = lastDraftRef.current
-    lastDraftRef.current = isDraft
-    if (!wasDraft && isDraft && poseConnected && askedRef.current) {
-      sessionStorage.removeItem(sessionKey)
-      askedRef.current = false
-      setShowFloorModal(true)
-    }
-  }, [isDraft, poseConnected, sessionKey])
+    setShowFloorModal(isDraft && poseConnected)
+  }, [isDraft, poseConnected])
 
   const refresh = () => queryClient.invalidateQueries({ predicate: () => true })
 
@@ -206,6 +182,14 @@ export function RobotsPage() {
       setActionMode('idle')
     },
     onError: () => { setActionMode('idle'); log('reloc failed') },
+  })
+  const resetPoseMut = useMutation({
+    mutationFn: async () => resetSimPose(),
+    onMutate: () => log('sim 시작 좌표로 텔레포트…'),
+    onSuccess: (r) => log(r.ok
+      ? `sim teleport ok (robot ${r.robot_id})`
+      : `sim teleport failed: ${r.error ?? '?'}`),
+    onError: (e: unknown) => log(`sim teleport error: ${e instanceof Error ? e.message : '?'}`),
   })
   const cmd = useMutation({
     mutationFn: async (action: 'pause' | 'resume' | 'estop') => {
@@ -389,16 +373,20 @@ export function RobotsPage() {
 
   const health = healthQuery.data ?? {}
   const mapMeta = mapMetaQuery.data
-  const currentMap = mapsQuery.data?.find((m) => m.id === robot.mapId)
+  const currentMap = mapsQuery.data?.maps.find((m) => m.id === robot.mapId)
 
-  // 맵 클릭: '목적지 이동' arming 상태에서만 goal preview 설정 (자동 발행 X)
+  // 맵 클릭: 'goto' 또는 'teleport' arming 상태에서만 preview 설정 (자동 발행 X)
   const onMapClickWorld = (x: number, y: number) => {
     if (actionMode === 'goto-arming') {
       setGoalPreview({ x, y })
       setActionMode('goto-placed')
     } else if (actionMode === 'goto-placed') {
-      // 다시 클릭 시 위치 갱신
       setGoalPreview({ x, y })
+    } else if (actionMode === 'teleport-arming') {
+      setTeleportPreview({ x, y })
+      setActionMode('teleport-placed')
+    } else if (actionMode === 'teleport-placed') {
+      setTeleportPreview({ x, y })
     }
   }
 
@@ -413,6 +401,19 @@ export function RobotsPage() {
     setActionMode('goto-running')
   }
   const cancelGoto = () => { setActionMode('idle'); setGoalPreview(null) }
+
+  const publishTeleport = () => {
+    if (!teleportPreview) return
+    // sim_server 기본 z = 0.05 + identity quat (수평 유지). xy 만 사용자 클릭.
+    resetSimPose({ pose: [teleportPreview.x, teleportPreview.y, 0.05, 0, 0, 0, 1] })
+      .then((r) => log(r.ok
+        ? `teleport (${teleportPreview.x.toFixed(2)}, ${teleportPreview.y.toFixed(2)}) ok`
+        : `teleport failed: ${r.error ?? '?'}`))
+      .catch((e: unknown) => log(`teleport error: ${e instanceof Error ? e.message : '?'}`))
+    setActionMode('idle')
+    setTeleportPreview(null)
+  }
+  const cancelTeleport = () => { setActionMode('idle'); setTeleportPreview(null) }
 
   return (
     <AppShell title={robot.label} subtitle="">
@@ -446,14 +447,20 @@ export function RobotsPage() {
           {/* 좌측: map (flex-1) + horizontal splitter + dock (고정 height) */}
           <div className="flex min-w-0 flex-1 flex-col">
             <div className="relative min-h-0 flex-1 bg-slate-200">
-              <MapCanvas
+              <Map3DCanvas
                 pose={pose}
-                armed={actionMode === 'goto-arming' || actionMode === 'goto-placed'}
+                armed={actionMode === 'goto-arming' || actionMode === 'goto-placed'
+                       || actionMode === 'teleport-arming' || actionMode === 'teleport-placed'}
+                armedKind={
+                  actionMode === 'goto-arming' || actionMode === 'goto-placed' ? 'goto'
+                  : actionMode === 'teleport-arming' || actionMode === 'teleport-placed' ? 'teleport'
+                  : null
+                }
                 goalPreview={goalPreview}
+                teleportPreview={teleportPreview}
                 onMapClickWorld={onMapClickWorld}
+                onHoverWorld={setCursorWorld}
                 eventIdle={actionMode === 'idle'}
-                rotation={viewRotation}
-                setRotation={setViewRotation}
               />
             </div>
             {dockOpen && (
@@ -469,7 +476,7 @@ export function RobotsPage() {
               {activeTab === 'mapinfo' && (
                 <MapPanel
                   mapMeta={mapMeta} currentMap={currentMap} isDraft={isDraft}
-                  allMaps={mapsQuery.data ?? []}
+                  allMaps={mapsQuery.data?.maps ?? []}
                   slamActive={!!health.slam_active}
                   onLoad={(id: number) => { if (health.slam_active) slamStopMut.mutate(); loadMut.mutate(id) }}
                   onRename={(n: string) => renameMut.mutate(n)}
@@ -485,6 +492,11 @@ export function RobotsPage() {
                   onPublishGoto={publishGoto}
                   onCancelGoto={cancelGoto}
                   onReloc={() => { setActionMode('reloc'); relocMut.mutate() }}
+                  onArmTeleport={() => { setActionMode('teleport-arming'); setTeleportPreview(null) }}
+                  teleportPreview={teleportPreview}
+                  onPublishTeleport={publishTeleport}
+                  onCancelTeleport={cancelTeleport}
+                  resetPosePending={resetPoseMut.isPending}
                   onSlamStart={() => exploreMut.mutate()}
                   onSlamStop={() => slamStopMut.mutate()}
                   onCancelEvent={cancelEvent}
@@ -496,6 +508,7 @@ export function RobotsPage() {
                   setAngSpeed={setAngSpeed}
                 />
               )}
+              {activeTab === 'view' && <CameraGridPanel />}
               {activeTab === 'log' && <LogPanel log={actionLog} />}
               {activeTab === 'health' && <HealthPanel health={health} />}
               {activeTab === 'debug' && <DebugPanel health={health} />}
@@ -567,21 +580,25 @@ export function RobotsPage() {
           <span className={pose.stale ? 'text-amber-600' : ''}>
             pose {pose.available ? `${pose.age_seconds}s` : '—'}
           </span>
+          <span>·</span>
+          <span className={cursorWorld ? 'text-slate-700' : 'text-slate-400'}>
+            cursor {cursorWorld ? `(${cursorWorld.x.toFixed(2)}, ${cursorWorld.y.toFixed(2)})` : '—'}
+          </span>
           <span className="ml-auto">
             sim t={pose.sim_secs ? pose.sim_secs.toFixed(1) : (health.sim_secs?.toFixed(1) ?? '—')}s
           </span>
         </div>
       </div>
       {showFloorModal ? (
+        // initialFloorCode 를 비워서 운영자가 _명시적으로_ 입력하게 함.
+        // 이전엔 robot.floorCode 가 default 로 들어가, 시스템이 OCR / 이전 보딩
+        // 자취로 "5층이라고 가정" 한 듯한 UX. 운영자 의사가 권위라는 원칙에 맞게
+        // 매번 빈 modal 로 시작.
         <FloorPromptModal
           robotId={robotId}
-          initialFloorCode={robot.floorCode}
+          initialFloorCode={null}
           onSessionStarted={refresh}
-          onClose={() => {
-            setShowFloorModal(false)
-            askedRef.current = true
-            try { sessionStorage.setItem(sessionKey, '1') } catch {}
-          }}
+          onClose={() => setShowFloorModal(false)}
         />
       ) : null}
     </AppShell>
@@ -758,7 +775,7 @@ function SensorTile({ label, path }: { label: string; path: string }) {
     let stopped = false
     const close = () => {
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
-      if (ws) { try { ws.close() } catch {} ; ws = null }
+      if (ws) { ws.onopen = null; ws.onclose = null; ws.onmessage = null; ws.onerror = null; try { ws.close() } catch {}; ws = null }
     }
     const connect = () => {
       if (stopped || document.hidden) return
@@ -779,7 +796,7 @@ function SensorTile({ label, path }: { label: string; path: string }) {
     }
     const onVis = () => {
       if (document.hidden) close()
-      else if (!ws || ws.readyState >= WebSocket.CLOSING) connect()
+      else { close(); connect() }
     }
     document.addEventListener('visibilitychange', onVis)
     connect()
@@ -814,10 +831,22 @@ function SensorTile({ label, path }: { label: string; path: string }) {
 }
 
 function CameraView() {
+  // 한 번에 하나만 표시 (RGB / Depth). 타일 클릭으로 토글.
+  // 안 보여지는 쪽은 unmount 라 WS 도 닫힘 → 대역폭 절약.
+  const [mode, setMode] = useState<'rgb' | 'depth'>('rgb')
+  const next = mode === 'rgb' ? 'depth' : 'rgb'
   return (
-    <div className="grid grid-cols-2 gap-px bg-slate-200">
-      <SensorTile label="rgb" path="/ws/camera" />
-      <SensorTile label="depth" path="/ws/depth" />
+    <div
+      className="relative cursor-pointer bg-slate-200"
+      onClick={() => setMode(next)}
+      title={`클릭: ${next.toUpperCase()} 보기`}
+    >
+      {mode === 'rgb'
+        ? <SensorTile label="rgb" path="/ws/camera" />
+        : <SensorTile label="depth" path="/ws/depth" />}
+      <div className="pointer-events-none absolute right-1 top-1 rounded bg-slate-950/75 px-1.5 py-0.5 font-mono text-[10px] uppercase text-slate-100">
+        클릭→{next}
+      </div>
     </div>
   )
 }
@@ -900,7 +929,9 @@ function MapPanel({
 function ActionPanel({
   mode, goalPreview, exploreActive, relocPending,
   onArmGoto, onPublishGoto, onCancelGoto,
-  onReloc, onSlamStart, onSlamStop, onCancelEvent,
+  onReloc, onArmTeleport, teleportPreview, onPublishTeleport, onCancelTeleport,
+  resetPosePending,
+  onSlamStart, onSlamStop, onCancelEvent,
   pressKey, stopTeleop,
   linSpeed, angSpeed, setLinSpeed, setAngSpeed,
 }: {
@@ -912,6 +943,11 @@ function ActionPanel({
   onPublishGoto: () => void
   onCancelGoto: () => void
   onReloc: () => void
+  onArmTeleport: () => void
+  teleportPreview: { x: number; y: number } | null
+  onPublishTeleport: () => void
+  onCancelTeleport: () => void
+  resetPosePending: boolean
   onSlamStart: () => void
   onSlamStop: () => void
   onCancelEvent: () => void
@@ -925,6 +961,7 @@ function ActionPanel({
   const slamRunning = mode === 'slam' || exploreActive
   const relocRunning = mode === 'reloc' || relocPending
   const gotoArmed = mode === 'goto-arming' || mode === 'goto-placed'
+  const teleportArmed = mode === 'teleport-arming' || mode === 'teleport-placed'
   const gotoRunning = mode === 'goto-running'
   return (
     <PanelGrid cols={3}>
@@ -1006,10 +1043,43 @@ function ActionPanel({
             </>
           )}
         </ActionRow>
+
+        <ActionRow
+          icon={<RefreshCw className="h-4 w-4" />}
+          label="원하는 위치로 이동"
+          accent="orange"
+          active={teleportArmed || resetPosePending}
+          disabled={mode !== 'idle' && !teleportArmed && !resetPosePending}
+          onClick={onArmTeleport}
+        >
+          {mode === 'teleport-arming' && (
+            <span className="text-xs text-slate-500">맵 클릭으로 위치 지정</span>
+          )}
+          {mode === 'teleport-placed' && teleportPreview && (
+            <>
+              <span className="font-mono text-xs text-slate-700">
+                ({teleportPreview.x.toFixed(2)}, {teleportPreview.y.toFixed(2)})
+              </span>
+              <button type="button" onClick={onPublishTeleport}
+                className="rounded bg-orange-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-orange-500">
+                텔레포트
+              </button>
+            </>
+          )}
+          {teleportArmed && (
+            <button type="button" onClick={onCancelTeleport}
+              className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">
+              취소
+            </button>
+          )}
+          {resetPosePending && (
+            <span className="text-xs text-orange-700">⟳ 텔레포트 중…</span>
+          )}
+        </ActionRow>
         </div>
       </Subpanel>
 
-      <Subpanel title="수동 조작 (WASD + QR)">
+      <Subpanel title="수동 조작 (WASD + QE)">
         <div className="flex flex-col items-start gap-2">
           <ManualTeleop
             pressKey={pressKey}
@@ -1209,7 +1279,7 @@ function ActionRow({
 }: {
   icon: React.ReactNode
   label: string
-  accent: 'blue' | 'purple' | 'emerald'
+  accent: 'blue' | 'purple' | 'emerald' | 'orange'
   active: boolean
   disabled?: boolean
   onClick: () => void
@@ -1219,11 +1289,13 @@ function ActionRow({
     blue:    'border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100',
     purple:  'border-purple-300 bg-purple-50 text-purple-700 hover:bg-purple-100',
     emerald: 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
+    orange:  'border-orange-300 bg-orange-50 text-orange-700 hover:bg-orange-100',
   }[accent]
   const on = {
     blue:    'bg-blue-600 text-white hover:bg-blue-500',
     purple:  'bg-purple-600 text-white hover:bg-purple-500',
     emerald: 'bg-emerald-600 text-white hover:bg-emerald-500',
+    orange:  'bg-orange-600 text-white hover:bg-orange-500',
   }[accent]
   return (
     <div className="flex items-center gap-2">
@@ -1365,6 +1437,73 @@ function KeyCap({
   )
 }
 
+// Front + 양 wrist 카메라 3개 한 행에 표시. Isaac bridge 가 발행하는
+// /camera/{name}/image_raw/compressed 를 어댑터의 /ws/camera/{name} 으로 받음.
+function CameraGridPanel() {
+  return (
+    <div className="grid grid-cols-3 gap-2 p-2">
+      <CameraTile name="front" label="Front" />
+      <CameraTile name="wrist_left" label="Wrist Left" />
+      <CameraTile name="wrist_right" label="Wrist Right" />
+    </div>
+  )
+}
+
+function CameraTile({ name, label }: { name: 'front' | 'wrist_left' | 'wrist_right'; label: string }) {
+  const imgRef = useRef<HTMLImageElement>(null)
+  const [live, setLive] = useState(false)
+  const lastSrcRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/camera/${name}`
+    let ws: WebSocket | null = null
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let stopped = false
+    const close = () => {
+      if (timer) { clearTimeout(timer); timer = null }
+      if (ws) { ws.onopen = null; ws.onclose = null; ws.onmessage = null; ws.onerror = null; try { ws.close() } catch {}; ws = null }
+      setLive(false)
+    }
+    const connect = () => {
+      if (stopped || document.hidden) return
+      ws = new WebSocket(url)
+      ws.binaryType = 'arraybuffer'
+      ws.onopen = () => setLive(true)
+      ws.onclose = () => { setLive(false); if (!stopped && !document.hidden) timer = setTimeout(connect, 2000) }
+      ws.onmessage = (ev) => {
+        if (!(ev.data instanceof ArrayBuffer)) return
+        const blob = new Blob([ev.data], { type: 'image/jpeg' })
+        const objUrl = URL.createObjectURL(blob)
+        const prev = lastSrcRef.current
+        lastSrcRef.current = objUrl
+        if (imgRef.current) imgRef.current.src = objUrl
+        if (prev) URL.revokeObjectURL(prev)
+      }
+    }
+    const onVis = () => { if (document.hidden) close(); else { close(); connect() } }
+    document.addEventListener('visibilitychange', onVis)
+    connect()
+    return () => {
+      stopped = true
+      document.removeEventListener('visibilitychange', onVis)
+      close()
+      if (lastSrcRef.current) { URL.revokeObjectURL(lastSrcRef.current); lastSrcRef.current = null }
+    }
+  }, [name])
+
+  return (
+    <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-slate-900">
+      <img ref={imgRef} alt={label} className="block aspect-video w-full object-contain" />
+      <div className="pointer-events-none absolute left-2 top-2 rounded bg-slate-900/70 px-2 py-0.5 text-xs font-medium text-white backdrop-blur">
+        {label}
+      </div>
+      <div className="pointer-events-none absolute right-2 top-2 rounded bg-slate-900/70 px-2 py-0.5 text-[10px] font-mono text-white">
+        {live ? <span className="text-emerald-400">● live</span> : <span className="text-slate-400">○ offline</span>}
+      </div>
+    </div>
+  )
+}
+
 function LogPanel({ log }: { log: string[] }) {
   return (
     <PanelGrid cols={1}>
@@ -1382,7 +1521,16 @@ function LogPanel({ log }: { log: string[] }) {
 }
 
 function HealthPanel({ health }: { health: any }) {
-  const expected = (health.ros_expected_topics ?? {}) as Record<string, boolean>
+  // 신규 metrics 우선, 없으면 legacy alive flag fallback (호환성).
+  const metrics = (health.ros_topic_metrics ?? {}) as Record<
+    string, { alive: boolean; hz: number | null; expected_hz: number | null }
+  >
+  const legacyExpected = (health.ros_expected_topics ?? {}) as Record<string, boolean>
+  const topicEntries: Array<[string, { alive: boolean; hz: number | null; expected_hz: number | null }]> =
+    Object.keys(metrics).length > 0
+      ? Object.entries(metrics)
+      : Object.entries(legacyExpected).map(([t, ok]) => [t, { alive: ok, hz: null, expected_hz: null }])
+  const aliveCount = topicEntries.filter(([, v]) => v.alive).length
   return (
     <PanelGrid cols={2}>
       <Subpanel title="서비스">
@@ -1399,14 +1547,42 @@ function HealthPanel({ health }: { health: any }) {
         <a className="mt-3 inline-block rounded border border-slate-300 bg-white px-3 py-1 text-xs text-slate-700 hover:bg-slate-50"
            href="ws://localhost:8765" target="_blank" rel="noreferrer">Foxglove ws://8765</a>
       </Subpanel>
-      <Subpanel title={`ROS 토픽 (${Object.values(expected).filter(Boolean).length}/${Object.keys(expected).length} 활성)`}>
+      <Subpanel title={`ROS 토픽 (${aliveCount}/${topicEntries.length} 활성)`}>
         <div className="space-y-1 text-sm leading-6">
-          {Object.entries(expected).map(([t, ok]) => (
-            <div key={t} className="flex items-center gap-2">
-              <span className={`inline-block h-1.5 w-1.5 rounded-full ${ok ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-              <span className={ok ? 'text-slate-700' : 'text-slate-400'}>{t}</span>
-            </div>
-          ))}
+          {topicEntries.map(([t, v]) => {
+            // "죽은" 판정 — 측정값(hz)과 정상주기(expected_hz) 둘 다 있을 때만 가능.
+            // hz < expected_hz / 2 면 사용자가 정의한 "원래 주기보다 2배 늦음" → 빨간 점.
+            // 텍스트는 그대로 두고 점만 빨간색으로 강조 (사용자 요청).
+            const hasHz = typeof v.hz === 'number' && typeof v.expected_hz === 'number'
+            const dead = hasHz && (v.hz as number) < (v.expected_hz as number) / 2
+            const dotClass = dead
+              ? 'bg-red-500'
+              : v.alive ? 'bg-emerald-500' : 'bg-slate-300'
+            const labelClass = v.alive ? 'text-slate-700' : 'text-slate-400'
+            // Hz 텍스트 — 측정값이 있으면 "12.3/30 Hz", 없고 expected 만 있으면 "—/30",
+            // 둘 다 없으면 비표시.
+            let hzText: string | null = null
+            if (typeof v.hz === 'number') {
+              hzText = typeof v.expected_hz === 'number'
+                ? `${v.hz.toFixed(1)} / ${v.expected_hz.toFixed(1)} Hz`
+                : `${v.hz.toFixed(1)} Hz`
+            } else if (typeof v.expected_hz === 'number') {
+              hzText = `— / ${v.expected_hz.toFixed(1)} Hz`
+            }
+            return (
+              <div key={t} className="flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
+                  <span className={`truncate ${labelClass}`}>{t}</span>
+                </div>
+                {hzText ? (
+                  <span className="shrink-0 font-mono text-xs tabular-nums text-slate-500">
+                    {hzText}
+                  </span>
+                ) : null}
+              </div>
+            )
+          })}
         </div>
       </Subpanel>
     </PanelGrid>
@@ -1421,7 +1597,13 @@ function DebugPanel({ health }: { health: any }) {
           <KV k="rtabmap.db" v={
             <span className="truncate" title={health.rtabmap_db_path}>{health.rtabmap_db_path?.split('/').pop() ?? '—'}</span>
           } />
-          <KV k="size" v={health.rtabmap_db_size_mb ? `${health.rtabmap_db_size_mb} MB` : '—'} />
+          <KV k="size" v={
+            health.rtabmap_db_size_mb
+              ? (health.rtabmap_db_size_mb >= 1024
+                  ? `${(health.rtabmap_db_size_mb / 1024).toFixed(2)} GB`
+                  : `${health.rtabmap_db_size_mb.toFixed(0)} MB`)
+              : '—'
+          } />
           <KV k="floor_db_dir" v={
             <span className="truncate" title={health.floor_db_dir}>{health.floor_db_dir?.split('/').pop() ?? '—'}</span>
           } />
@@ -1456,668 +1638,3 @@ function PanelGrid({ cols, children }: { cols: number; children: React.ReactNode
   return <div className={`grid h-full ${gridCols} gap-6`}>{children}</div>
 }
 
-// ── MapCanvas (light + nav click) ─────────────────────────────────────────
-type LiveMeta = {
-  width: number; height: number; resolution: number
-  origin_x: number; origin_y: number; updated_at: number
-}
-
-function MapCanvas({
-  pose, armed, goalPreview, onMapClickWorld, eventIdle, rotation, setRotation,
-}: {
-  pose: any
-  armed: boolean
-  goalPreview: { x: number; y: number } | null
-  onMapClickWorld: (x: number, y: number) => void
-  eventIdle: boolean
-  rotation: number
-  setRotation: React.Dispatch<React.SetStateAction<number>>
-}) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [scale, setScale] = useState(1)
-  const [offset, setOffset] = useState({ x: 0, y: 0 })
-  const [tilt, setTilt] = useState(0)  // degrees, 0=탑뷰 / 60=거의 옆에서
-  const [dragging, setDragging] = useState<'pan' | 'rotate' | 'tilt' | null>(null)
-  const lastDrag = useRef({ x: 0, y: 0 })
-  const dragMoved = useRef(false)
-  const imgRef = useRef<HTMLImageElement | null>(null)
-  const [meta, setMeta] = useState<LiveMeta | null>(null)
-  const [lastMsg, setLastMsg] = useState(0)
-  const [canvasSize, setCanvasSize] = useState({ w: 800, h: 600 })
-
-  const resetView = useCallback(() => {
-    setScale(1); setOffset({ x: 0, y: 0 }); setRotation(0); setTilt(0)
-  }, [])
-  const [path, setPath] = useState<Array<[number, number]>>([])
-  const [trajectory, setTrajectory] = useState<Array<[number, number]>>([])
-  const [frontiers, setFrontiers] = useState<Array<[number, number]>>([])
-  type OcrSpot = { id: string; room_id: string; x: number; y: number; confirmed: boolean; confidence: number; observations: number }
-  const [ocrSpots, setOcrSpots] = useState<OcrSpot[]>([])
-  const [show3D, setShow3D] = useState(true)   // nvblox cloud overlay 디폴트 ON
-  const cloudRef = useRef<Float32Array | null>(null)
-  const [cloudCount, setCloudCount] = useState(0)
-
-  // 이벤트 종료 (idle 진입) 시 경로/프론티어 잔재 청소.
-  useEffect(() => {
-    if (eventIdle) { setPath([]); setFrontiers([]) }
-  }, [eventIdle])
-
-  // ResizeObserver — 컨테이너 크기 변경 시 캔버스 픽셀 크기 동기화.
-  // (컨테이너 CSS 크기와 캔버스 내부 px 크기를 일치시켜 격자 왜곡 방지)
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => {
-      const rect = el.getBoundingClientRect()
-      const dpr = window.devicePixelRatio || 1
-      setCanvasSize({ w: Math.round(rect.width * dpr), h: Math.round(rect.height * dpr) })
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-
-  useEffect(() => {
-    // 카메라와 동일 패턴: 탭 hidden 시 WS 끊어 server 가 push 멈추게.
-    const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/map`
-    let ws: WebSocket | null = null
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-    let pendingMeta: LiveMeta | null = null
-    let stopped = false
-    const close = () => {
-      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
-      if (ws) { try { ws.close() } catch {} ; ws = null }
-    }
-    const connect = () => {
-      if (stopped || document.hidden) return
-      ws = new WebSocket(url)
-      ws.binaryType = 'arraybuffer'
-      ws.onclose = () => {
-        if (stopped || document.hidden) return
-        reconnectTimer = setTimeout(connect, 2000)
-      }
-      ws.onmessage = (ev) => {
-        if (document.hidden) return
-        if (typeof ev.data === 'string') {
-          pendingMeta = JSON.parse(ev.data) as LiveMeta
-        } else {
-          const blob = new Blob([ev.data as ArrayBuffer], { type: 'image/png' })
-          const objUrl = URL.createObjectURL(blob)
-          const img = new Image()
-          img.onload = () => {
-            imgRef.current = img
-            if (pendingMeta) setMeta(pendingMeta)
-            setLastMsg(Date.now())
-            URL.revokeObjectURL(objUrl)
-          }
-          img.src = objUrl
-        }
-      }
-    }
-    const onVis = () => {
-      if (document.hidden) close()
-      else if (!ws || ws.readyState >= WebSocket.CLOSING) connect()
-    }
-    document.addEventListener('visibilitychange', onVis)
-    connect()
-    return () => {
-      stopped = true
-      document.removeEventListener('visibilitychange', onVis)
-      close()
-    }
-  }, [])
-
-  // /ws/path — Nav2 /plan 라이브 폴리라인 (이벤트 진행 중에만 publish 됨).
-  // 카메라/맵과 같은 visibility-aware 패턴.
-  useEffect(() => {
-    const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/path`
-    let ws: WebSocket | null = null
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-    let stopped = false
-    const close = () => {
-      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
-      if (ws) { try { ws.close() } catch {}; ws = null }
-    }
-    const connect = () => {
-      if (stopped || document.hidden) return
-      ws = new WebSocket(url)
-      ws.onclose = () => {
-        if (stopped || document.hidden) return
-        reconnectTimer = setTimeout(connect, 2000)
-      }
-      ws.onmessage = (ev) => {
-        if (typeof ev.data !== 'string') return
-        try {
-          const msg = JSON.parse(ev.data) as { points: Array<[number, number]> }
-          setPath(msg.points || [])
-        } catch {}
-      }
-    }
-    const onVis = () => {
-      if (document.hidden) close()
-      else if (!ws || ws.readyState >= WebSocket.CLOSING) connect()
-    }
-    document.addEventListener('visibilitychange', onVis)
-    connect()
-    return () => {
-      stopped = true
-      document.removeEventListener('visibilitychange', onVis)
-      close()
-    }
-  }, [])
-
-  // /ws/trajectory — 실제 주행 궤적. Nav2 계획(/plan)과 별개로 계속 유지된다.
-  useEffect(() => {
-    const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/trajectory`
-    let ws: WebSocket | null = null
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-    let stopped = false
-    const close = () => {
-      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
-      if (ws) { try { ws.close() } catch {}; ws = null }
-    }
-    const connect = () => {
-      if (stopped || document.hidden) return
-      ws = new WebSocket(url)
-      ws.onclose = () => {
-        if (stopped || document.hidden) return
-        reconnectTimer = setTimeout(connect, 2000)
-      }
-      ws.onmessage = (ev) => {
-        if (typeof ev.data !== 'string') return
-        try {
-          const msg = JSON.parse(ev.data) as { points: Array<[number, number]> }
-          setTrajectory(msg.points || [])
-        } catch {}
-      }
-    }
-    const onVis = () => {
-      if (document.hidden) close()
-      else if (!ws || ws.readyState >= WebSocket.CLOSING) connect()
-    }
-    document.addEventListener('visibilitychange', onVis)
-    connect()
-    return () => {
-      stopped = true
-      document.removeEventListener('visibilitychange', onVis)
-      close()
-    }
-  }, [])
-
-  // /ws/cloud — nvblox PointCloud2 → Float32Array(x,y,z 반복). show3D 일 때만 연결.
-  useEffect(() => {
-    if (!show3D) {
-      cloudRef.current = null
-      setCloudCount(0)
-      return
-    }
-    const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/cloud`
-    let ws: WebSocket | null = null
-    let timer: ReturnType<typeof setTimeout> | null = null
-    let stopped = false
-    const close = () => {
-      if (timer) { clearTimeout(timer); timer = null }
-      if (ws) { try { ws.close() } catch {}; ws = null }
-    }
-    const connect = () => {
-      if (stopped || document.hidden) return
-      ws = new WebSocket(url)
-      ws.binaryType = 'arraybuffer'
-      ws.onclose = () => {
-        if (stopped || document.hidden) return
-        timer = setTimeout(connect, 2000)
-      }
-      ws.onmessage = (ev) => {
-        if (!(ev.data instanceof ArrayBuffer)) return
-        cloudRef.current = new Float32Array(ev.data)
-        setCloudCount(cloudRef.current.length / 3 | 0)
-      }
-    }
-    const onVis = () => {
-      if (document.hidden) close()
-      else if (!ws || ws.readyState >= WebSocket.CLOSING) connect()
-    }
-    document.addEventListener('visibilitychange', onVis)
-    connect()
-    return () => {
-      stopped = true
-      document.removeEventListener('visibilitychange', onVis)
-      close()
-    }
-  }, [show3D])
-
-  // /ws/frontiers — explore_lite frontier 후보 (자율 탐사 진행 중일 때만 채워짐)
-  useEffect(() => {
-    const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/frontiers`
-    let ws: WebSocket | null = null
-    let timer: ReturnType<typeof setTimeout> | null = null
-    let stopped = false
-    const close = () => {
-      if (timer) { clearTimeout(timer); timer = null }
-      if (ws) { try { ws.close() } catch {}; ws = null }
-    }
-    const connect = () => {
-      if (stopped || document.hidden) return
-      ws = new WebSocket(url)
-      ws.onclose = () => {
-        if (stopped || document.hidden) return
-        timer = setTimeout(connect, 2000)
-      }
-      ws.onmessage = (ev) => {
-        if (typeof ev.data !== 'string') return
-        try {
-          const msg = JSON.parse(ev.data) as { points: Array<[number, number]> }
-          setFrontiers(msg.points || [])
-        } catch {}
-      }
-    }
-    const onVis = () => {
-      if (document.hidden) close()
-      else if (!ws || ws.readyState >= WebSocket.CLOSING) connect()
-    }
-    document.addEventListener('visibilitychange', onVis)
-    connect()
-    return () => {
-      stopped = true
-      document.removeEventListener('visibilitychange', onVis)
-      close()
-    }
-  }, [])
-
-  // /ws/ocr — semantic OCR 트랙. 새 detection 도착마다 spot 갱신.
-  useEffect(() => {
-    const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/ocr`
-    let ws: WebSocket | null = null
-    let timer: ReturnType<typeof setTimeout> | null = null
-    let stopped = false
-    const close = () => {
-      if (timer) { clearTimeout(timer); timer = null }
-      if (ws) { try { ws.close() } catch {}; ws = null }
-    }
-    const connect = () => {
-      if (stopped || document.hidden) return
-      ws = new WebSocket(url)
-      ws.onclose = () => {
-        if (stopped || document.hidden) return
-        timer = setTimeout(connect, 2000)
-      }
-      ws.onmessage = (ev) => {
-        if (typeof ev.data !== 'string') return
-        try {
-          const msg = JSON.parse(ev.data) as { tracks: OcrSpot[] }
-          setOcrSpots(msg.tracks || [])
-        } catch {}
-      }
-    }
-    const onVis = () => {
-      if (document.hidden) close()
-      else if (!ws || ws.readyState >= WebSocket.CLOSING) connect()
-    }
-    document.addEventListener('visibilitychange', onVis)
-    connect()
-    return () => {
-      stopped = true
-      document.removeEventListener('visibilitychange', onVis)
-      close()
-    }
-  }, [])
-
-  useEffect(() => { draw() }, [meta, pose, scale, offset, rotation, goalPreview, canvasSize, path, trajectory, frontiers, cloudCount, show3D, ocrSpots])
-
-  // CSS 픽셀 기준 + rotation 역변환. draw() 의 변환 순서: translate(center) → rotate(rot)
-  // → scale → drawImage(world). 따라서 역변환: 클릭 px → 중심 빼기 → rotate(-rot) →
-  // scale 나누기 → world offset 더하기.
-  function worldFromCanvas(cx: number, cy: number): { x: number; y: number } | null {
-    const c = canvasRef.current
-    if (!c || !meta) return null
-    const rect = c.getBoundingClientRect()
-    const px = cx - rect.left
-    const py = cy - rect.top
-    const cxc = rect.width / 2 + offset.x
-    const cyc = rect.height / 2 + offset.y
-    // 캔버스 상 클릭 → 회전 적용된 좌표계의 좌표.
-    let dx = px - cxc
-    let dy = py - cyc
-    // 역회전 (-rotation)
-    const cs = Math.cos(-rotation), sn = Math.sin(-rotation)
-    const rx = dx * cs - dy * sn
-    const ry = dx * sn + dy * cs
-    const wx = rx / (50 * scale) + (meta.origin_x + meta.width * meta.resolution / 2)
-    const wy = -ry / (50 * scale) + (meta.origin_y + meta.height * meta.resolution / 2)
-    return { x: wx, y: wy }
-  }
-
-  function draw() {
-    const c = canvasRef.current
-    if (!c) return
-    const ctx = c.getContext('2d')
-    if (!ctx) return
-    // DPR 보정: c.width 는 px 단위 (DPR 곱), CSS 픽셀로 그려야 격자/선이 깔끔.
-    const dpr = window.devicePixelRatio || 1
-    const W = c.width / dpr
-    const H = c.height / dpr
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)  // 한 번 스케일 적용
-    ctx.clearRect(0, 0, W, H)
-    // 라이트 배경 + 격자
-    ctx.fillStyle = '#f1f5f9'
-    ctx.fillRect(0, 0, W, H)
-    ctx.strokeStyle = '#e2e8f0'
-    ctx.lineWidth = 1
-    const gridPx = 50 * scale
-    for (let gx = (offset.x % gridPx + W / 2) % gridPx; gx < W; gx += gridPx) {
-      ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke()
-    }
-    for (let gy = (offset.y % gridPx + H / 2) % gridPx; gy < H; gy += gridPx) {
-      ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke()
-    }
-    if (!meta) return
-
-    const px = 50 * scale
-    const cx = W / 2 + offset.x
-    const cy = H / 2 + offset.y
-
-    // 회전: 격자 제외 모든 콘텐츠 (맵/path/frontier/pose/goal) 를 (cx,cy) 중심으로 회전.
-    ctx.save()
-    ctx.translate(cx, cy)
-    ctx.rotate(rotation)
-    ctx.translate(-cx, -cy)
-
-    const img = imgRef.current
-    if (img) {
-      const w = meta.width * meta.resolution * px
-      const h = meta.height * meta.resolution * px
-      const ox = cx - meta.width * meta.resolution * px / 2
-      const oy = cy - meta.height * meta.resolution * px / 2
-      ctx.imageSmoothingEnabled = false
-      ctx.drawImage(img, ox, oy, w, h)
-    }
-
-    const cwx = meta.origin_x + meta.width * meta.resolution / 2
-    const cwy = meta.origin_y + meta.height * meta.resolution / 2
-
-    // nvblox 3D pointcloud — show3D 토글 시 z (높이) 별 색상 그라데이션 점.
-    // 회색 격자 위, 맵 이미지 아래에 그려도 되지만 가독성 위해 path 와 비슷한 위치.
-    const cloud = cloudRef.current
-    if (cloud && cloud.length >= 3) {
-      ctx.save()
-      const n = (cloud.length / 3) | 0
-      // 점 크기는 줌에 비례 (가까이 보면 큼)
-      const r = Math.max(1, 2 * scale)
-      // z 범위 추정 (한 번만 — 전체 색상화)
-      let zmin = Infinity, zmax = -Infinity
-      for (let i = 0; i < n; i++) {
-        const z = cloud[i * 3 + 2]
-        if (z < zmin) zmin = z
-        if (z > zmax) zmax = z
-      }
-      const zspan = Math.max(0.1, zmax - zmin)
-      for (let i = 0; i < n; i++) {
-        const wx = cloud[i * 3]
-        const wy = cloud[i * 3 + 1]
-        const z  = cloud[i * 3 + 2]
-        const sx = cx + (wx - cwx) * px
-        const sy = cy - (wy - cwy) * px
-        // viridis-ish: 낮으면 파랑, 높으면 노랑
-        const t = (z - zmin) / zspan  // 0..1
-        const cr = Math.round(70 + 185 * t)
-        const cg = Math.round(40 + 200 * t)
-        const cb = Math.round(180 - 140 * t)
-        ctx.fillStyle = `rgba(${cr},${cg},${cb},0.5)`
-        ctx.fillRect(sx - r / 2, sy - r / 2, r, r)
-      }
-      ctx.restore()
-    }
-
-    // explore_lite frontier 후보 — 자율 탐사 중 미탐색 영역. 초록 점.
-    if (frontiers.length > 0) {
-      ctx.save()
-      ctx.fillStyle = 'rgba(16, 185, 129, 0.85)'
-      ctx.strokeStyle = '#047857'
-      ctx.lineWidth = 1.5
-      for (const [wx, wy] of frontiers) {
-        const sx = cx + (wx - cwx) * px
-        const sy = cy - (wy - cwy) * px
-        ctx.beginPath()
-        ctx.arc(sx, sy, 5, 0, Math.PI * 2)
-        ctx.fill()
-        ctx.stroke()
-      }
-      ctx.restore()
-    }
-
-    // semantic OCR 트랙 — 표지판 인식 위치. 확정(2회+) 초록, 후보 노랑. room_id 라벨.
-    if (ocrSpots.length > 0) {
-      ctx.save()
-      for (const spot of ocrSpots) {
-        const sx = cx + (spot.x - cwx) * px
-        const sy = cy - (spot.y - cwy) * px
-        const fill = spot.confirmed ? 'rgba(16,185,129,0.95)' : 'rgba(245,158,11,0.9)'
-        const stroke = spot.confirmed ? '#047857' : '#b45309'
-        ctx.fillStyle = fill
-        ctx.strokeStyle = stroke
-        ctx.lineWidth = 2
-        ctx.beginPath()
-        ctx.arc(sx, sy, 7, 0, Math.PI * 2)
-        ctx.fill()
-        ctx.stroke()
-        if (spot.room_id) {
-          ctx.font = 'bold 12px ui-sans-serif, system-ui, sans-serif'
-          const text = spot.room_id
-          const tw = ctx.measureText(text).width
-          ctx.fillStyle = 'rgba(15, 23, 42, 0.85)'
-          ctx.fillRect(sx + 9, sy - 14, tw + 8, 18)
-          ctx.fillStyle = '#fff'
-          ctx.fillText(text, sx + 13, sy)
-        }
-      }
-      ctx.restore()
-    }
-
-    // 실제 주행 궤적 — /trajectory. 계획 경로(/plan)와 달리 idle 상태에서도 유지된다.
-    if (trajectory.length > 1) {
-      ctx.save()
-      ctx.strokeStyle = '#0f766e'
-      ctx.lineWidth = 3
-      ctx.lineCap = 'round'
-      ctx.lineJoin = 'round'
-      ctx.shadowColor = 'rgba(15, 118, 110, 0.22)'
-      ctx.shadowBlur = 4
-      ctx.beginPath()
-      let first = true
-      for (const [wx, wy] of trajectory) {
-        const sx = cx + (wx - cwx) * px
-        const sy = cy - (wy - cwy) * px
-        if (first) { ctx.moveTo(sx, sy); first = false }
-        else ctx.lineTo(sx, sy)
-      }
-      ctx.stroke()
-      ctx.restore()
-    }
-
-    // Nav2 /plan 경로 — 진행 중 이벤트의 계획된 path 폴리라인.
-    if (path.length > 1) {
-      ctx.save()
-      ctx.strokeStyle = '#2563eb'
-      ctx.lineWidth = 3
-      ctx.lineCap = 'round'
-      ctx.lineJoin = 'round'
-      ctx.shadowColor = 'rgba(37, 99, 235, 0.35)'
-      ctx.shadowBlur = 6
-      ctx.beginPath()
-      let first = true
-      for (const [wx, wy] of path) {
-        const sx = cx + (wx - cwx) * px
-        const sy = cy - (wy - cwy) * px
-        if (first) { ctx.moveTo(sx, sy); first = false }
-        else ctx.lineTo(sx, sy)
-      }
-      ctx.stroke()
-      // 끝점 작은 dot
-      const [ex, ey] = path[path.length - 1]
-      ctx.shadowBlur = 0
-      ctx.fillStyle = '#1d4ed8'
-      ctx.beginPath()
-      ctx.arc(cx + (ex - cwx) * px, cy - (ey - cwy) * px, 4, 0, Math.PI * 2)
-      ctx.fill()
-      ctx.restore()
-    }
-
-    if (pose?.available && pose.x != null && pose.y != null) {
-      const px_x = cx + (pose.x - cwx) * px
-      const px_y = cy - (pose.y - cwy) * px
-      ctx.save()
-      ctx.translate(px_x, px_y)
-      ctx.rotate(-(pose.yaw_rad ?? 0))
-      ctx.fillStyle = '#2563eb'
-      ctx.beginPath()
-      ctx.arc(0, 0, 6, 0, Math.PI * 2)
-      ctx.fill()
-      ctx.fillStyle = 'rgba(37, 99, 235, 0.18)'
-      ctx.beginPath()
-      const fov = Math.PI / 3, range = 5 * px
-      ctx.moveTo(0, 0)
-      ctx.arc(0, 0, range, -fov / 2, fov / 2)
-      ctx.closePath()
-      ctx.fill()
-      ctx.restore()
-    }
-
-    // Goal preview marker (target reticle)
-    if (goalPreview) {
-      const gx = cx + (goalPreview.x - cwx) * px
-      const gy = cy - (goalPreview.y - cwy) * px
-      ctx.save()
-      ctx.translate(gx, gy)
-      // 외부 링
-      ctx.strokeStyle = '#1d4ed8'
-      ctx.lineWidth = 2
-      ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.stroke()
-      // 십자
-      ctx.beginPath(); ctx.moveTo(-16, 0); ctx.lineTo(16, 0); ctx.moveTo(0, -16); ctx.lineTo(0, 16); ctx.stroke()
-      // 중앙 점
-      ctx.fillStyle = '#1d4ed8'
-      ctx.beginPath(); ctx.arc(0, 0, 3, 0, Math.PI * 2); ctx.fill()
-      ctx.restore()
-    }
-
-    // 회전 transform 종료
-    ctx.restore()
-  }
-
-  const live = lastMsg > 0 && Date.now() - lastMsg < 5000
-  return (
-    <div
-      ref={containerRef}
-      className={`relative h-full w-full ${armed ? 'cursor-crosshair' : dragging === 'rotate' ? 'cursor-ew-resize' : 'cursor-grab'}`}
-      onContextMenu={(e) => e.preventDefault()}
-      onMouseDown={(e) => {
-        // 좌클릭=pan, 우클릭/Shift=회전, 중간(휠)클릭/Ctrl=3D 기울기
-        let mode: 'pan' | 'rotate' | 'tilt' = 'pan'
-        if (e.button === 1 || e.ctrlKey) mode = 'tilt'
-        else if (e.button === 2 || e.shiftKey) mode = 'rotate'
-        if (mode === 'tilt') e.preventDefault()  // 휠클릭 기본 스크롤 방지
-        setDragging(mode)
-        dragMoved.current = false
-        lastDrag.current = { x: e.clientX, y: e.clientY }
-      }}
-      onMouseLeave={() => setDragging(null)}
-      onMouseMove={(e) => {
-        if (!dragging) return
-        const dx = e.clientX - lastDrag.current.x
-        const dy = e.clientY - lastDrag.current.y
-        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) dragMoved.current = true
-        lastDrag.current = { x: e.clientX, y: e.clientY }
-        if (dragging === 'rotate') {
-          setRotation((r) => r + dx * 0.01)
-        } else if (dragging === 'tilt') {
-          // 세로 드래그 = 3D 기울기 (위 = 더 기울임). 0~60deg clamp.
-          setTilt((t) => Math.max(0, Math.min(60, t + dy * 0.3)))
-        } else {
-          setOffset((o) => ({ x: o.x + dx, y: o.y + dy }))
-        }
-      }}
-      onMouseUp={(e) => {
-        setDragging(null)
-        if (!dragMoved.current && armed && e.button === 0) {
-          const w = worldFromCanvas(e.clientX, e.clientY)
-          if (w) onMapClickWorld(w.x, w.y)
-        }
-      }}
-      onWheel={(e) => {
-        e.preventDefault()
-        setScale((s) => Math.max(0.1, Math.min(20, s * (e.deltaY < 0 ? 1.1 : 0.9))))
-      }}
-    >
-      <canvas
-        ref={canvasRef}
-        width={canvasSize.w}
-        height={canvasSize.h}
-        className="block h-full w-full"
-        style={{
-          // 3D 기울기 — 탑뷰 (0deg) ~ 60deg. perspective 로 입체감.
-          transform: tilt !== 0 ? `perspective(1500px) rotateX(${tilt}deg)` : undefined,
-          transformOrigin: 'center center',
-          transition: dragging === 'tilt' ? 'none' : 'transform 0.15s ease-out',
-        }}
-      />
-      {/* armed dim overlay — 맵을 살짝 어둡게 + 강조 ring */}
-      {armed && (
-        <div className="pointer-events-none absolute inset-0 ring-4 ring-inset ring-blue-400/60">
-          <div className="absolute inset-0 bg-slate-950/15" />
-          <div className="absolute left-1/2 top-3 -translate-x-1/2 rounded bg-blue-600 px-3 py-1 text-xs font-semibold text-white shadow">
-            맵을 클릭해서 목적지 지정
-          </div>
-        </div>
-      )}
-      {!meta && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center font-mono text-sm text-slate-400">
-          no map · SLAM 시작 시 표시
-        </div>
-      )}
-      {/* 우상단 컨트롤: 3D 메쉬 토글 + 탑뷰 리셋 + 회전/기울기 각도 */}
-      <div className="absolute right-2 top-2 flex items-center gap-1">
-        {rotation !== 0 && (
-          <span className="rounded bg-white/90 px-2 py-1 font-mono text-xs text-slate-600 backdrop-blur">
-            ↻ {((rotation * 180) / Math.PI).toFixed(0)}°
-          </span>
-        )}
-        {tilt !== 0 && (
-          <span className="rounded bg-white/90 px-2 py-1 font-mono text-xs text-slate-600 backdrop-blur">
-            ⌒ {tilt.toFixed(0)}°
-          </span>
-        )}
-        <button
-          type="button"
-          onClick={() => setShow3D((v) => !v)}
-          title="nvblox scene mesh overlay (실험)"
-          className={`rounded border px-2 py-1 text-xs font-medium ${
-            show3D
-              ? 'border-emerald-400 bg-emerald-500 text-white hover:bg-emerald-600'
-              : 'border-slate-300 bg-white/90 text-slate-700 hover:bg-white'
-          }`}
-        >
-          3D
-        </button>
-        <button
-          type="button"
-          onClick={resetView}
-          title="탑뷰로 (회전·줌·이동·기울기 리셋)"
-          className="rounded border border-slate-300 bg-white/90 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-white"
-        >
-          탑뷰
-        </button>
-      </div>
-      {/* 3D pointcloud 활성 표시 */}
-      {show3D && (
-        <div className="pointer-events-none absolute left-2 top-2 rounded bg-emerald-50/95 border border-emerald-300 px-2 py-1 text-xs text-emerald-800 shadow-sm">
-          3D cloud · {cloudCount.toLocaleString()} pts
-        </div>
-      )}
-      <div className="pointer-events-none absolute bottom-2 right-2 rounded bg-white/90 px-2 py-0.5 font-mono text-xs text-slate-500 backdrop-blur">
-        {live ? <span className="text-emerald-600">●</span> : <span className="text-slate-300">○</span>}
-        {' '}50px/m × {scale.toFixed(1)} · 휠=줌 좌드래그=이동 우/Shift=회전 휠클릭/Ctrl=기울기
-        {armed && <span className="ml-2 text-blue-600">· 클릭=goal</span>}
-      </div>
-    </div>
-  )
-}
